@@ -3,3 +3,5 @@ build/
 .kotlin/
 node_modules/
 *.csv
+
+local.properties
