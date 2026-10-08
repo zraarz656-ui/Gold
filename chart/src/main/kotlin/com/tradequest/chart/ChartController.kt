@@ -17,7 +17,7 @@ class ChartController(
     news: List<NewsEvent> = emptyList(),
     initialTimeframe: Timeframe = Timeframe.M15,
 ) {
-    private val cache = TimeframeCache(m1)
+    private var cache = TimeframeCache(m1)
 
     var plotWidthPx: Float = 1000f
     var density: Float = 1f
@@ -213,6 +213,38 @@ class ChartController(
     fun setClock(ms: Long) {
         state = state.copy(clockMs = ms)
     }
+
+    /** Replace the whole series once the dataset is loaded from Room. */
+    fun replaceData(m1: List<Candle>, news: List<NewsEvent>) {
+        cache = TimeframeCache(m1)
+        state = state.copy(m1 = m1, news = news, bars = cache.bars(state.timeframe))
+        jumpToLatest()
+    }
+
+    fun setOverlays(lines: List<ChartOrderLine>, markers: List<ChartMarker>) {
+        state = state.copy(orderLines = lines, markers = markers)
+    }
+
+    fun setMarketClosed(closed: Boolean) {
+        if (state.marketClosed != closed) state = state.copy(marketClosed = closed)
+    }
+
+    /** Bar index of the bar opening at [ts], or -1 when outside the visible series. */
+    fun barIndexForTs(ts: Long): Int {
+        val bars = state.bars
+        if (bars.isEmpty()) return -1
+        val i = ChartMath.fractionalIndex(bars.map { it.ts }, ts)
+        val idx = kotlin.math.round(i).toInt()
+        return if (idx in bars.indices) idx else -1
+    }
+
+    /** Bar index under a tap at [x], or -1. */
+    fun barIndexAt(x: Float, right: Float): Int =
+        GestureMath.barIndexAt(x, state.viewport, state.barCount, right)
+
+    /** Price at a vertical position within the plot area. */
+    fun priceAtY(y: Float, top: Float, bottom: Float): Double =
+        ChartMath.yToPrice(y, currentPriceRange(), top, bottom)
 
     fun setDisplayOffset(ms: Long) {
         if (state.displayOffsetMs != ms) state = state.copy(displayOffsetMs = ms)

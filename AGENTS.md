@@ -1,0 +1,40 @@
+# TradeQuest — agent notes
+
+Offline, single-user Android app. Kotlin + Jetpack Compose, MVVM, Hilt, Room,
+Coroutines/Flow, WorkManager, DataStore. XAUUSD only; a "live" market is replayed from
+bundled 1-minute history using a whole-week time offset.
+
+## Modules
+
+- `engine` — pure Kotlin/JVM (no Android). `ClockEngine`, `MarketCalendar`, `Aggregator`,
+  `FillEngine`, `AccountState`, constants (`MarketTime`, lot/commission/spread levels).
+  Tests run on the JVM with JUnit 5.
+- `chart` — Compose candlestick chart. `ChartController` holds `ChartState` (bars, viewport,
+  theme, `orderLines`, `markers`, `marketClosed`); `ChartRenderer` draws it. `ChartOverlays.kt`
+  defines `ChartOrderLine` / `ChartMarker`.
+- `data` — Room database, DAOs, repositories (`CandleRepository`, `SeasonRepository`,
+  `TradingRepository`, `SettingsRepository`), `DatasetImporter`, `CatchUpProcessor`,
+  `AccountCheckpoint`. Tests are Robolectric + in-memory Room.
+- `app` — Hilt/Compose app: `TradingViewModel`, screens, `LiveClock` (minute ticker),
+  `CatchUpWorker`/`CatchUpScheduler`/`Notifier`.
+
+## Build & test
+
+JDK 17 or 21 and the Android SDK are required. The toolchain is preinstalled at
+`~/tools/jdk-21.0.12.1+1` and `~/android-sdk` in this environment:
+
+```bash
+export JAVA_HOME=$HOME/tools/jdk-21.0.12.1+1
+export ANDROID_HOME=$HOME/android-sdk ANDROID_SDK_ROOT=$HOME/android-sdk
+./gradlew :data:test :engine:test :app:assembleDebug
+```
+
+## Invariants
+
+- A candle may only be exposed when `ts <= ClockEngine.lastVisibleCandleTs(histNow)`
+  (`CandleRepository` enforces this; never hand it a raw `histNow`).
+- Catch-up is deterministic: `AccountCheckpoint` (serialised `AccountState`) is written in
+  the same Room transaction as `Season.lastProcessedTs`, so an interrupted run resumes
+  exactly. Keep both in one `withTransaction`.
+- Orders are evaluated from the next candle after placement.
+- Process death must lose nothing: all authoritative state lives in Room, not in memory.

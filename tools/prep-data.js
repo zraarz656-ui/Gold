@@ -74,7 +74,14 @@ async function main() {
 
   const lines = ["ts,o,h,l,c,v", ...unique.map(toCsvLine)];
   fs.mkdirSync(path.dirname(path.resolve(outFile)), { recursive: true });
-  fs.writeFileSync(outFile, lines.join("\n") + "\n");
+  const payload = lines.join("\n") + "\n";
+  if (outFile.endsWith(".gz")) {
+    // Bundle into the app as assets/xauusd_m1.csv.gz
+    const zlib = require("zlib");
+    fs.writeFileSync(outFile, zlib.gzipSync(Buffer.from(payload), { level: 6 }));
+  } else {
+    fs.writeFileSync(outFile, payload);
+  }
 
   const first = unique.length ? unique[0].timestamp : "n/a";
   const last = unique.length ? unique[unique.length - 1].timestamp : "n/a";

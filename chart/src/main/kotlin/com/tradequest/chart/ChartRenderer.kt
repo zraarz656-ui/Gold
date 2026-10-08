@@ -69,7 +69,7 @@ fun DrawScope.drawChart(
     drawCandles(state, geo, paths)
     drawIndicatorHook(state, geo)
     drawDrawingsHook(state, geo)
-    drawOrderLinesHook(state, geo)
+    drawOrderLinesHook(state, geo, textMeasurer)
 
     val last = state.bars.lastOrNull()
     val currentY = last?.let { ChartMath.priceToY(it.c, geo.priceRange, geo.top, geo.bottom) }
@@ -141,7 +141,67 @@ private fun DrawScope.drawCandles(state: ChartState, geo: ChartGeometry, paths: 
 // Extension points for Phase 3 overlays (indicators, drawings, order lines).
 private fun DrawScope.drawIndicatorHook(state: ChartState, geo: ChartGeometry) {}
 private fun DrawScope.drawDrawingsHook(state: ChartState, geo: ChartGeometry) {}
-private fun DrawScope.drawOrderLinesHook(state: ChartState, geo: ChartGeometry) {}
+
+/** Draw the order/SL/TP lines and entry/exit markers supplied by the trading layer. */
+private fun DrawScope.drawOrderLinesHook(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
+    if (state.orderLines.isEmpty() && state.markers.isEmpty()) return
+    for (line in state.orderLines) {
+        val y = ChartMath.priceToY(line.price, geo.priceRange, geo.top, geo.bottom)
+        if (y < geo.top - 2f || y > geo.bottom + 2f) continue
+        val color = line.color()
+        drawDashedLine(color, Offset(geo.left, y), Offset(geo.right, y))
+        val label = if (line.pnlText != null) line.label + "  " + line.pnlText else line.label
+        drawTag(textMeasurer, geo, label, y, color)
+    }
+    for (m in state.markers) {
+        val x = ChartMath.indexToX(m.barIndex.toFloat(), state.viewport)
+        if (x < geo.left - 8f || x > geo.right + 8f) continue
+        val y = ChartMath.priceToY(m.price, geo.priceRange, geo.top, geo.bottom)
+        drawMarker(x, y, m.entry, m.long)
+    }
+}
+
+private fun ChartOrderLine.color(): Color = when (kind) {
+    OrderLineKind.ENTRY -> Color(0xFF42A5F5)
+    OrderLineKind.SL -> Color(0xFFEF5350)
+    OrderLineKind.TP -> Color(0xFF26A69A)
+    OrderLineKind.PENDING -> Color(0xFFFFB300)
+}
+
+private fun DrawScope.drawTag(textMeasurer: TextMeasurer, geo: ChartGeometry, text: String, y: Float, color: Color) {
+    val yc = y.coerceIn(geo.top + 7f, geo.bottom - 7f)
+    drawRect(color, Offset(geo.left + 1f, yc - 7f), Size(120f, 14f))
+    drawText(textMeasurer, text, Offset(geo.left + 4f, yc - 6f), TextStyle(Color.White, 10.sp))
+}
+
+/** A small triangle at an entry/exit point. */
+private fun DrawScope.drawMarker(x: Float, y: Float, entry: Boolean, long: Boolean) {
+    val size = 7f
+    val path = Path()
+    if (entry) {
+        if (long) {
+            path.moveTo(x, y - size)
+            path.lineTo(x - size, y - size * 2.2f)
+            path.lineTo(x + size, y - size * 2.2f)
+        } else {
+            path.moveTo(x, y + size)
+            path.lineTo(x - size, y + size * 2.2f)
+            path.lineTo(x + size, y + size * 2.2f)
+        }
+    } else {
+        if (long) {
+            path.moveTo(x, y + size)
+            path.lineTo(x - size, y + size * 2.2f)
+            path.lineTo(x + size, y + size * 2.2f)
+        } else {
+            path.moveTo(x, y - size)
+            path.lineTo(x - size, y - size * 2.2f)
+            path.lineTo(x + size, y - size * 2.2f)
+        }
+    }
+    path.close()
+    drawPath(path, if (long) Color(0xFF26A69A) else Color(0xFFEF5350))
+}
 
 private fun DrawScope.drawCurrentPrice(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
     val last = state.bars.lastOrNull() ?: return
@@ -221,6 +281,15 @@ fun DrawScope.drawTimeAxis(state: ChartState, geo: ChartGeometry, textMeasurer: 
         if (x < geo.left - 6f || x > geo.right) continue
         drawAxisLabel(textMeasurer, theme, formatTimeLabel(t.displayTs, state.timeframe), x + 3f, axisTop + 4f)
     }
+}
+
+/** Centre banner shown while the replayed market is shut. */
+fun DrawScope.drawMarketClosedBanner(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
+    val text = "Market closed"
+    val cx = (geo.left + geo.right) / 2f
+    val cy = (geo.top + geo.bottom) / 2f
+    drawRect(Color(0xCC1A1F27), Offset(cx - 92f, cy - 20f), Size(184f, 40f))
+    drawText(textMeasurer, text, Offset(cx - 78f, cy - 10f), TextStyle(Color(0xFFFFB300), 16.sp))
 }
 
 fun formatTimeLabel(ts: Long, tf: Timeframe): String {

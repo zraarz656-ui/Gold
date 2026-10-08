@@ -37,6 +37,9 @@ data class ChartState(
     val drawMode: Boolean = false,
     val clockMs: Long? = null,
     val liveEdgeFollowing: Boolean = true,
+    val orderLines: List<ChartOrderLine> = emptyList(),
+    val markers: List<ChartMarker> = emptyList(),
+    val marketClosed: Boolean = false,
 ) {
     val barCount: Int get() = bars.size
 }

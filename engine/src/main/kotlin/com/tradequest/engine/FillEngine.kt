@@ -62,7 +62,7 @@ data class Fill(
 )
 
 /** Why a position was closed. */
-enum class CloseReason { SL, TP, STOP_OUT }
+enum class CloseReason { SL, TP, STOP_OUT, MANUAL }
 
 /** A realised close with its profit and loss. */
 data class ClosedPosition(
@@ -431,6 +431,35 @@ object FillEngine {
             reason = reason,
         )
     }
+
+    /**
+     * Close an open position at [exitPrice] (the current bid), returning the new state and
+     * the realised trade. Used for manual and partial closes; the candle loop does not
+     * call this. Partial closes keep the original position id on the remainder.
+     */
+    fun closePosition(
+        state: AccountState,
+        positionId: Long,
+        exitPrice: Double,
+        lots: Double = Double.MAX_VALUE,
+    ): Pair<AccountState, ClosedPosition>? {
+        val pos = state.positions.firstOrNull { it.id == positionId } ?: return null
+        val closingLots = min(lots, pos.lots)
+        if (closingLots <= 0.0) return null
+        val realised = realise(state.balance, pos.copy(lots = closingLots), roundPrice(exitPrice), CloseReason.MANUAL)
+        val remainder = pos.lots - closingLots
+        val positions = if (remainder <= 1e-9) {
+            state.positions.filterNot { it.id == positionId }
+        } else {
+            state.positions.map { if (it.id == positionId) pos.copy(lots = roundLots(remainder)) else it }
+        }
+        return state.copy(balance = realised.first, positions = positions) to realised.second
+    }
+
+    /** Cancel a pending order. Returns the new state, or null when [orderId] is unknown. */
+    fun cancelOrder(state: AccountState, orderId: Long): AccountState? =
+        if (state.orders.none { it.id == orderId }) null
+        else state.copy(orders = state.orders.filterNot { it.id == orderId })
 
     /** True if [ts] is within [windowMs] (inclusive) of a HIGH-impact event. */
     private fun withinHighNews(ts: Long, news: List<NewsEvent>, windowMs: Long): Boolean =
