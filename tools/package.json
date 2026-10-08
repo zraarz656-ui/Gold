@@ -1,0 +1,15 @@
+{
+  "name": "tradequest-tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Data preparation tooling for TradeQuest",
+  "bin": {
+    "prep-data": "prep-data.js"
+  },
+  "scripts": {
+    "prep-data": "node prep-data.js"
+  },
+  "dependencies": {
+    "dukascopy-node": "^1.45.0"
+  }
+}
