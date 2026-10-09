@@ -74,6 +74,16 @@ object MarketCalendar {
     }
 
     /**
+     * True when [ts] sits in the weekend shutdown (Friday 17:00 through Sunday 17:00
+     * New York), i.e. exactly when [isClosed] holds. Gaps that land inside this window
+     * are the normal weekend break and are not real data gaps.
+     */
+    fun isWeekend(ts: Long): Boolean = isClosed(ts)
+
+    /** True when [ts] is a regular weekday session minute, i.e. the market is open. */
+    fun isWeekdayOpen(ts: Long): Boolean = !isClosed(ts)
+
+    /**
      * True while the FX market is closed for the weekend: from the Friday 17:00 New York
      * rollover until Sunday 17:00 New York.
      */

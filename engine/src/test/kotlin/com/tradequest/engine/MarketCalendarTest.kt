@@ -1,5 +1,6 @@
 package com.tradequest.engine
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -32,5 +33,23 @@ class MarketCalendarTest {
         val sunday = TestSupport.ny(2024, 3, 10, 17, 0)
         assertTrue(MarketCalendar.isClosed(friday))
         assertFalse(MarketCalendar.isClosed(sunday))
+    }
+
+    @Test
+    fun `isWeekend matches the closure and isWeekdayOpen is its inverse`() {
+        val fridayOpen = TestSupport.ny(2024, 3, 8, 16, 59)
+        val fridayRoll = TestSupport.ny(2024, 3, 8, 17, 0)
+        val saturday = TestSupport.ny(2024, 3, 9, 12, 0)
+        val sundayClosed = TestSupport.ny(2024, 3, 10, 16, 59)
+        val sundayOpen = TestSupport.ny(2024, 3, 10, 17, 0)
+        val midweek = TestSupport.ny(2024, 3, 13, 10, 0)
+
+        for (ts in listOf(fridayOpen, fridayRoll, saturday, sundayClosed, sundayOpen, midweek)) {
+            assertEquals(MarketCalendar.isClosed(ts), MarketCalendar.isWeekend(ts))
+            assertEquals(!MarketCalendar.isClosed(ts), MarketCalendar.isWeekdayOpen(ts))
+        }
+        // The weekend shutdown itself is "weekend"; a normal session minute is not.
+        assertTrue(MarketCalendar.isWeekend(saturday))
+        assertFalse(MarketCalendar.isWeekend(midweek))
     }
 }
