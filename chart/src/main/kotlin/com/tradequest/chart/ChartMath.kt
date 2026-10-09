@@ -41,6 +41,18 @@ data class Viewport(
     val autoScale: Boolean get() = !manualPriceScale
 }
 
+/** The plot rectangle for one canvas: everything except the right price gutter and the
+ *  bottom time axis. This is the single source of truth for the drawable area. */
+data class PlotRect(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+) {
+    val width: Float get() = right - left
+    val height: Float get() = bottom - top
+}
+
 /** Resolved pixel geometry for one draw pass. */
 data class ChartGeometry(
     val left: Float,
@@ -52,6 +64,9 @@ data class ChartGeometry(
 ) {
     val width: Float get() = right - left
     val height: Float get() = bottom - top
+
+    /** The plot rectangle, derived from the corners so there is one definition of it. */
+    val plot: PlotRect get() = PlotRect(left, top, right, bottom)
 }
 
 /**
@@ -71,6 +86,22 @@ object ChartMath {
     fun xToIndex(x: Float, viewport: Viewport): Float =
         (x / viewport.candleWidthPx) + viewport.scrollIndex
 
+    /**
+     * The plot rectangle inside a canvas, excluding the right price gutter ([axisWidthPx])
+     * and the bottom time axis ([bottomAxisPx]). Every draw path and hit test derives its
+     * geometry from this so no layer can disagree about where the plot is.
+     */
+    fun plotRect(canvasWidth: Float, canvasHeight: Float, axisWidthPx: Float, bottomAxisPx: Float): PlotRect =
+        PlotRect(
+            left = 0f,
+            top = 0f,
+            right = maxOf(canvasWidth - axisWidthPx, 1f),
+            bottom = maxOf(canvasHeight - bottomAxisPx, 1f),
+        )
+
+    fun priceToY(price: Double, range: PriceRange, plot: PlotRect): Float =
+        priceToY(price, range, plot.top, plot.bottom)
+
     fun priceToY(price: Double, range: PriceRange, top: Float, bottom: Float): Float {
         if (range.span <= 0.0) return (top + bottom) / 2f
         val t = (range.max - price) / range.span
@@ -82,6 +113,9 @@ object ChartMath {
         val t = (y - top) / (bottom - top)
         return range.max - t * range.span
     }
+
+    fun yToPrice(y: Float, range: PriceRange, plot: PlotRect): Double =
+        yToPrice(y, range, plot.top, plot.bottom)
 
     fun visibleRange(viewport: Viewport, plotWidth: Float, candleCount: Int, buffer: Int = 1): IntRange {
         if (candleCount <= 0) return IntRange.EMPTY

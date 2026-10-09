@@ -158,7 +158,7 @@ fun CandleChart(
                                 }
                                 controller.setManualPriceRange(scaleStartMin, scaleStartMax)
                                 val factor = GestureMath.priceScaleFactor(
-                                    change.position.y - down.position.y, geo.height,
+                                    change.position.y - down.position.y, geo.plot.height,
                                 )
                                 controller.scalePriceRange(factor)
                                 currentDebug?.lastZoom = factor.toFloat()
@@ -179,21 +179,21 @@ fun CandleChart(
                             }
                             controller.setManualPriceRange(scaleStartMin, scaleStartMax)
                             val totalDy = change.position.y - down.position.y
-                            val factor = GestureMath.priceScaleFactor(totalDy, geo.height)
+                            val factor = GestureMath.priceScaleFactor(totalDy, geo.plot.height)
                             controller.scalePriceRange(factor)
                             currentDebug?.lastZoom = factor.toFloat()
                             event.changes.forEach { it.consume() }
                         } else if (dragLine != null) {
                             currentDebug?.mode = "LINE"
                             val line = dragLine!!
-                            currentOnLineDrag(line.id, line.kind, ChartMath.yToPrice(change.position.y, geo.priceRange, geo.top, geo.bottom))
+                            currentOnLineDrag(line.id, line.kind, ChartMath.yToPrice(change.position.y, geo.priceRange, geo.plot))
                             event.changes.forEach { it.consume() }
                         } else if (controller.state.viewport.manualPriceScale &&
                             abs(change.position.y - lastY) > 0f &&
                             abs(change.position.y - lastY) > abs(change.position.x - lastX)
                         ) {
                             currentDebug?.mode = "PRICE_DRAG"
-                            val perPx = geo.priceRange.span / maxOf(geo.height, 1f)
+                            val perPx = geo.priceRange.span / maxOf(geo.plot.height, 1f)
                             controller.panPriceRange((change.position.y - lastY) * perPx)
                             event.changes.forEach { it.consume() }
                         } else {
@@ -257,8 +257,8 @@ fun CandleChart(
 private fun nearestLine(state: ChartState, geo: ChartGeometry, y: Float): ChartOrderLine? =
     state.orderLines
         .filter { it.draggable }
-        .minByOrNull { abs(ChartMath.priceToY(it.price, geo.priceRange, geo.top, geo.bottom) - y) }
-        ?.takeIf { abs(ChartMath.priceToY(it.price, geo.priceRange, geo.top, geo.bottom) - y) < LINE_HIT_PX }
+        .minByOrNull { abs(ChartMath.priceToY(it.price, geo.priceRange, geo.plot) - y) }
+        ?.takeIf { abs(ChartMath.priceToY(it.price, geo.priceRange, geo.plot) - y) < LINE_HIT_PX }
 
 private const val LINE_HIT_PX = 28f
 
@@ -269,10 +269,10 @@ private fun emitCrosshair(
     geo: ChartGeometry,
     onChange: (CrosshairInfo?) -> Unit,
 ) {
-    val idx = GestureMath.barIndexAt(x, controller.state.viewport, controller.state.barCount, geo.right)
+    val idx = GestureMath.barIndexAt(x, controller.state.viewport, controller.state.barCount, geo.plot.right)
     if (idx >= 0) {
         val c = controller.state.bars[idx]
-        onChange(CrosshairInfo(c, ChartMath.yToPrice(y, geo.priceRange, geo.top, geo.bottom), x, y))
+        onChange(CrosshairInfo(c, ChartMath.yToPrice(y, geo.priceRange, geo.plot), x, y))
     }
 }
 
@@ -282,7 +282,7 @@ private fun tapNews(
     geo: ChartGeometry,
     onNewsTap: (NewsEvent) -> Unit,
 ) {
-    val idx = GestureMath.barIndexAt(x, controller.state.viewport, controller.state.barCount, geo.right)
+    val idx = GestureMath.barIndexAt(x, controller.state.viewport, controller.state.barCount, geo.plot.right)
     if (idx < 0) return
     val ts = controller.state.bars[idx].ts
     controller.state.news.minByOrNull { abs(it.ts - ts) }?.let(onNewsTap)

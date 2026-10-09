@@ -103,6 +103,33 @@ class ChartMathTest {
         }
     }
 
+    @Test
+    fun `plot rect excludes the gutter and the time axis`() {
+        val plot = ChartMath.plotRect(canvasWidth = 1000f, canvasHeight = 600f, axisWidthPx = 60f, bottomAxisPx = 20f)
+        assertEquals(0f, plot.left)
+        assertEquals(0f, plot.top)
+        assertEquals(940f, plot.right)
+        assertEquals(580f, plot.bottom)
+        assertEquals(940f, plot.width)
+        assertEquals(580f, plot.height)
+    }
+
+    @Test
+    fun `plot rect never collapses below one pixel`() {
+        val plot = ChartMath.plotRect(canvasWidth = 10f, canvasHeight = 5f, axisWidthPx = 60f, bottomAxisPx = 20f)
+        assertEquals(1f, plot.right)
+        assertEquals(1f, plot.bottom)
+    }
+
+    @Test
+    fun `price and y stay consistent through the plot rect overload`() {
+        val plot = ChartMath.plotRect(800f, 500f, 60f, 20f)
+        val range = PriceRange(2000.0, 2100.0)
+        val y = ChartMath.priceToY(2050.0, range, plot)
+        assertEquals(240f, y, 1e-3f)
+        assertEquals(2050.0, ChartMath.yToPrice(y, range, plot), 1e-6)
+    }
+
     private fun candle(ts: Long, h: Double, l: Double) =
         Candle(ts, o = (h + l) / 2, h = h, l = l, c = (h + l) / 2, v = 1.0)
 }

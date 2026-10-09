@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -21,10 +22,9 @@ const val TIME_LABEL_MIN_GAP_DP = 64.0f
 
 /** Plot rectangle + resolved price range + visible bar window for one frame. */
 fun geometryFor(state: ChartState, sizePx: Size, axisWidthPx: Float, bottomAxisPx: Float): ChartGeometry {
-    val right = maxOf(sizePx.width - axisWidthPx, 1f)
-    val bottom = maxOf(sizePx.height - bottomAxisPx, 1f)
-    val visible = ChartMath.visibleRange(state.viewport, right, state.barCount, 2)
-    return ChartGeometry(0f, 0f, right, bottom, resolvePriceRange(state, visible), visible)
+    val plot = ChartMath.plotRect(sizePx.width, sizePx.height, axisWidthPx, bottomAxisPx)
+    val visible = ChartMath.visibleRange(state.viewport, plot.right, state.barCount, 2)
+    return ChartGeometry(plot.left, plot.top, plot.right, plot.bottom, resolvePriceRange(state, visible), visible)
 }
 
 /** Auto-fit the visible bars, or honour the manual range when the user has pinned one. */
@@ -51,32 +51,47 @@ fun DrawScope.drawChart(
 ) {
     val theme = state.theme
     val priceTicks = ChartMath.niceTicks(geo.priceRange.min, geo.priceRange.max, 6)
+    val plot = geo.plot
 
-    for (p in priceTicks) {
-        val y = ChartMath.priceToY(p, geo.priceRange, geo.top, geo.bottom)
-        drawLine(theme.grid, Offset(geo.left, y), Offset(geo.right, y), 1f)
+    // Everything that belongs to the plot is clipped to it, so no layer can bleed over the
+    // price gutter, the time axis or its neighbours.
+    clipRect(plot.left, plot.top, plot.right, plot.bottom) {
+        for (p in priceTicks) {
+            val y = ChartMath.priceToY(p, geo.priceRange, plot)
+            drawLine(theme.grid, Offset(plot.left, y), Offset(plot.right, y), 1f)
+        }
+        drawLine(theme.grid, Offset(plot.right, plot.top), Offset(plot.right, plot.bottom), 1f)
+
+        drawMarketBands(state, geo)
+        drawCandles(state, geo, paths)
+        drawIndicatorHook(state, geo)
+        drawDrawingsHook(state, geo)
+        drawOrderLinesHook(state, geo, textMeasurer)
+
+        if (state.bars.lastOrNull() != null) drawCurrentPriceLine(state, geo)
+        if (crosshair != null) drawCrosshair(state, geo, crosshair)
     }
-    drawLine(theme.grid, Offset(geo.right, geo.top), Offset(geo.right, geo.bottom), 1f)
-
-    drawMarketBands(state, geo)
-    drawCandles(state, geo, paths)
-    drawIndicatorHook(state, geo)
-    drawDrawingsHook(state, geo)
-    drawOrderLinesHook(state, geo, textMeasurer)
 
     val last = state.bars.lastOrNull()
-    val currentY = last?.let { ChartMath.priceToY(it.c, geo.priceRange, geo.top, geo.bottom) }
-    val crosshairY = crosshair?.let { it.y.coerceIn(geo.top, geo.bottom) }
-    val occupied = listOfNotNull(currentY, crosshairY).map { it.coerceIn(geo.top + 7f, geo.bottom - 7f) }
+    val currentY = last?.let { ChartMath.priceToY(it.c, geo.priceRange, plot) }
+    val crosshairY = crosshair?.let { it.y.coerceIn(plot.top, plot.bottom) }
+    val occupied = listOfNotNull(currentY, crosshairY).map { it.coerceIn(plot.top + 7f, plot.bottom - 7f) }
     val minGapPx = density * PRICE_LABEL_MIN_GAP_DP
 
-    if (last != null) drawCurrentPrice(state, geo, textMeasurer)
-    if (crosshair != null) drawCrosshair(state, geo, textMeasurer, crosshair)
-
-    for (p in priceTicks) {
-        val y = ChartMath.priceToY(p, geo.priceRange, geo.top, geo.bottom)
-        if (!ChartMath.collidesWithAny(y, occupied, minGapPx)) {
-            drawAxisLabel(textMeasurer, theme, formatPrice(p), geo.right + 4f, y - 6f)
+    // Price labels live in the right gutter; clip them there so they never overlap the plot.
+    clipRect(plot.right, 0f, size.width, size.height) {
+        for (p in priceTicks) {
+            val y = ChartMath.priceToY(p, geo.priceRange, plot)
+            if (!ChartMath.collidesWithAny(y, occupied, minGapPx)) {
+                drawAxisLabel(textMeasurer, theme, formatPrice(p), plot.right + 4f, y - 6f)
+            }
+        }
+        if (last != null && currentY != null) {
+            drawPriceLabel(textMeasurer, theme, geo, last.c, currentY, theme.currentPrice)
+        }
+        if (crosshair != null) {
+            val cy = crosshair.y.coerceIn(plot.top, plot.bottom)
+            drawPriceLabel(textMeasurer, theme, geo, ChartMath.yToPrice(cy, geo.priceRange, plot), cy, theme.crosshair)
         }
     }
 }
@@ -95,9 +110,9 @@ private fun DrawScope.drawMarketBands(state: ChartState, geo: ChartGeometry) {
             val center = ChartMath.indexToX(i - 0.5f, vp)
             val w = maxOf(vp.candleWidthPx * 0.35f, 6f)
             val left = center - w / 2f
-            if (left < geo.right && left + w > geo.left) {
-                drawRect(theme.marketClosed, Offset(left, geo.top), Size(w, geo.height))
-                drawLine(theme.grid, Offset(center, geo.top), Offset(center, geo.bottom), 1f)
+            if (left < geo.plot.right && left + w > geo.plot.left) {
+                drawRect(theme.marketClosed, Offset(left, geo.plot.top), Size(w, geo.plot.height))
+                drawLine(theme.grid, Offset(center, geo.plot.top), Offset(center, geo.plot.bottom), 1f)
             }
         }
     }
@@ -111,12 +126,12 @@ private fun DrawScope.drawCandles(state: ChartState, geo: ChartGeometry, paths: 
     for (i in geo.visible.first..geo.visible.last) {
         val c = state.bars[i]
         val x = ChartMath.indexToX(i.toFloat(), vp)
-        if (x < geo.left - vp.candleWidthPx || x > geo.right + vp.candleWidthPx) continue
+        if (x < geo.plot.left - vp.candleWidthPx || x > geo.plot.right + vp.candleWidthPx) continue
         val up = c.c >= c.o
-        val yH = ChartMath.priceToY(c.h, geo.priceRange, geo.top, geo.bottom)
-        val yL = ChartMath.priceToY(c.l, geo.priceRange, geo.top, geo.bottom)
-        val yO = ChartMath.priceToY(c.o, geo.priceRange, geo.top, geo.bottom)
-        val yC = ChartMath.priceToY(c.c, geo.priceRange, geo.top, geo.bottom)
+        val yH = ChartMath.priceToY(c.h, geo.priceRange, geo.plot)
+        val yL = ChartMath.priceToY(c.l, geo.priceRange, geo.plot)
+        val yO = ChartMath.priceToY(c.o, geo.priceRange, geo.plot)
+        val yC = ChartMath.priceToY(c.c, geo.priceRange, geo.plot)
         val wick = if (up) paths.upWick else paths.downWick
         wick.moveTo(x, yH)
         wick.lineTo(x, yL)
@@ -139,17 +154,17 @@ private fun DrawScope.drawDrawingsHook(state: ChartState, geo: ChartGeometry) {}
 private fun DrawScope.drawOrderLinesHook(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
     if (state.orderLines.isEmpty() && state.markers.isEmpty()) return
     for (line in state.orderLines) {
-        val y = ChartMath.priceToY(line.price, geo.priceRange, geo.top, geo.bottom)
-        if (y < geo.top - 2f || y > geo.bottom + 2f) continue
+        val y = ChartMath.priceToY(line.price, geo.priceRange, geo.plot)
+        if (y < geo.plot.top - 2f || y > geo.plot.bottom + 2f) continue
         val color = line.color()
-        drawDashedLine(color, Offset(geo.left, y), Offset(geo.right, y))
+        drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y))
         val label = if (line.pnlText != null) line.label + "  " + line.pnlText else line.label
         drawTag(textMeasurer, geo, label, y, color)
     }
     for (m in state.markers) {
         val x = ChartMath.indexToX(m.barIndex.toFloat(), state.viewport)
-        if (x < geo.left - 8f || x > geo.right + 8f) continue
-        val y = ChartMath.priceToY(m.price, geo.priceRange, geo.top, geo.bottom)
+        if (x < geo.plot.left - 8f || x > geo.plot.right + 8f) continue
+        val y = ChartMath.priceToY(m.price, geo.priceRange, geo.plot)
         drawMarker(x, y, m.entry, m.long)
     }
 }
@@ -162,9 +177,9 @@ private fun ChartOrderLine.color(): Color = when (kind) {
 }
 
 private fun DrawScope.drawTag(textMeasurer: TextMeasurer, geo: ChartGeometry, text: String, y: Float, color: Color) {
-    val yc = y.coerceIn(geo.top + 7f, geo.bottom - 7f)
-    drawRect(color, Offset(geo.left + 1f, yc - 7f), Size(120f, 14f))
-    drawText(textMeasurer, text, Offset(geo.left + 4f, yc - 6f), TextStyle(Color.White, 10.sp))
+    val yc = y.coerceIn(geo.plot.top + 7f, geo.plot.bottom - 7f)
+    drawRect(color, Offset(geo.plot.left + 1f, yc - 7f), Size(120f, 14f))
+    drawText(textMeasurer, text, Offset(geo.plot.left + 4f, yc - 6f), TextStyle(Color.White, 10.sp))
 }
 
 /** A small triangle at an entry/exit point. */
@@ -196,27 +211,23 @@ private fun DrawScope.drawMarker(x: Float, y: Float, entry: Boolean, long: Boole
     drawPath(path, if (long) Color(0xFF26A69A) else Color(0xFFEF5350))
 }
 
-private fun DrawScope.drawCurrentPrice(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
+/** The current-price dashed line; its price label is drawn in the gutter clip. */
+private fun DrawScope.drawCurrentPriceLine(state: ChartState, geo: ChartGeometry) {
     val last = state.bars.lastOrNull() ?: return
-    val theme = state.theme
-    val y = ChartMath.priceToY(last.c, geo.priceRange, geo.top, geo.bottom)
-    drawDashedLine(theme.currentPrice, Offset(geo.left, y), Offset(geo.right, y))
-    drawPriceLabel(textMeasurer, theme, geo, last.c, y, theme.currentPrice)
+    val y = ChartMath.priceToY(last.c, geo.priceRange, geo.plot)
+    drawDashedLine(state.theme.currentPrice, Offset(geo.plot.left, y), Offset(geo.plot.right, y))
 }
 
 private fun DrawScope.drawCrosshair(
     state: ChartState,
     geo: ChartGeometry,
-    textMeasurer: TextMeasurer,
     crosshair: CrosshairInfo,
 ) {
     val theme = state.theme
-    val cx = crosshair.x.coerceIn(geo.left, geo.right)
-    val cy = crosshair.y.coerceIn(geo.top, geo.bottom)
-    drawDashedLine(theme.crosshair, Offset(cx, geo.top), Offset(cx, geo.bottom))
-    drawDashedLine(theme.crosshair, Offset(geo.left, cy), Offset(geo.right, cy))
-    val price = ChartMath.yToPrice(cy, geo.priceRange, geo.top, geo.bottom)
-    drawPriceLabel(textMeasurer, theme, geo, price, cy, theme.crosshair)
+    val cx = crosshair.x.coerceIn(geo.plot.left, geo.plot.right)
+    val cy = crosshair.y.coerceIn(geo.plot.top, geo.plot.bottom)
+    drawDashedLine(theme.crosshair, Offset(cx, geo.plot.top), Offset(cx, geo.plot.bottom))
+    drawDashedLine(theme.crosshair, Offset(geo.plot.left, cy), Offset(geo.plot.right, cy))
 }
 
 private fun DrawScope.drawDashedLine(color: Color, a: Offset, b: Offset) {
@@ -246,9 +257,9 @@ private fun DrawScope.drawPriceLabel(
     y: Float,
     color: Color,
 ) {
-    val yClamped = y.coerceIn(geo.top + 7f, geo.bottom - 7f)
-    drawRect(color, Offset(geo.right + 1f, yClamped - 7f), Size(56f, 14f))
-    drawText(textMeasurer, formatPrice(price), Offset(geo.right + 4f, yClamped - 6f), TextStyle(Color.White, 10.sp))
+    val yClamped = y.coerceIn(geo.plot.top + 7f, geo.plot.bottom - 7f)
+    drawRect(color, Offset(geo.plot.right + 1f, yClamped - 7f), Size(56f, 14f))
+    drawText(textMeasurer, formatPrice(price), Offset(geo.plot.right + 4f, yClamped - 6f), TextStyle(Color.White, 10.sp))
 }
 
 fun formatPrice(p: Double): String {
@@ -262,27 +273,29 @@ fun DrawScope.drawTimeAxis(state: ChartState, geo: ChartGeometry, textMeasurer: 
     val vp = state.viewport
     val bars = state.bars
     if (bars.isEmpty()) return
-    val axisTop = geo.bottom
-    drawLine(theme.grid, Offset(geo.left, axisTop), Offset(geo.right, axisTop), 1f)
-    val displayTs = bars.map { it.ts + state.displayOffsetMs }
-    val minSpacingPx = density * TIME_LABEL_MIN_GAP_DP
-    val ticks = ChartMath.timeAxisTicks(
-        displayTs, geo.visible, state.timeframe, vp.scrollIndex, vp.candleWidthPx, minSpacingPx,
-    )
-    for (t in ticks) {
-        val x = ChartMath.indexToX(t.index.toFloat(), vp)
-        if (x < geo.left - 6f || x > geo.right) continue
-        // Draw the ticks the label marks: a short vertical line at the tick, then the text.
-        drawLine(theme.grid, Offset(x, axisTop), Offset(x, axisTop + 4f), 1f)
-        drawAxisLabel(textMeasurer, theme, formatTimeLabel(t.displayTs, state.timeframe), x + 3f, axisTop + 4f)
+    val axisTop = geo.plot.bottom
+    clipRect(geo.plot.left, axisTop, geo.plot.right, size.height) {
+        drawLine(theme.grid, Offset(geo.plot.left, axisTop), Offset(geo.plot.right, axisTop), 1f)
+        val displayTs = bars.map { it.ts + state.displayOffsetMs }
+        val minSpacingPx = density * TIME_LABEL_MIN_GAP_DP
+        val ticks = ChartMath.timeAxisTicks(
+            displayTs, geo.visible, state.timeframe, vp.scrollIndex, vp.candleWidthPx, minSpacingPx,
+        )
+        for (t in ticks) {
+            val x = ChartMath.indexToX(t.index.toFloat(), vp)
+            if (x < geo.plot.left - 6f || x > geo.plot.right) continue
+            // Draw the ticks the label marks: a short vertical line at the tick, then the text.
+            drawLine(theme.grid, Offset(x, axisTop), Offset(x, axisTop + 4f), 1f)
+            drawAxisLabel(textMeasurer, theme, formatTimeLabel(t.displayTs, state.timeframe), x + 3f, axisTop + 4f)
+        }
     }
 }
 
 /** Centre banner shown while the replayed market is shut. */
 fun DrawScope.drawMarketClosedBanner(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
     val text = "Market closed"
-    val cx = (geo.left + geo.right) / 2f
-    val cy = (geo.top + geo.bottom) / 2f
+    val cx = (geo.plot.left + geo.plot.right) / 2f
+    val cy = (geo.plot.top + geo.plot.bottom) / 2f
     drawRect(Color(0xCC1A1F27), Offset(cx - 92f, cy - 20f), Size(184f, 40f))
     drawText(textMeasurer, text, Offset(cx - 78f, cy - 10f), TextStyle(Color(0xFFFFB300), 16.sp))
 }

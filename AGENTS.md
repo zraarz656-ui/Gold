@@ -34,12 +34,14 @@ to Dark. `ThemeContrastTest` asserts >= 4.5:1 for text tokens and >= 3:1 for `ou
 
 ## Build & test
 
-JDK 17 or 21 and the Android SDK are required. The toolchain is preinstalled at
-`~/tools/jdk-21.0.12.1+1` and `~/android-sdk` in this environment:
+JDK 17 or 21 and the Android SDK are required. In this environment the sandbox `$HOME`
+can be wiped between sessions, so the toolchain is kept on the persistent `/workspace`
+mount at `/workspace/toolchain/jdk-21.0.12.1+1` and `/workspace/toolchain/android-sdk`
+(`local.properties` points `sdk.dir` there):
 
 ```bash
-export JAVA_HOME=$HOME/tools/jdk-21.0.12.1+1
-export ANDROID_HOME=$HOME/android-sdk ANDROID_SDK_ROOT=$HOME/android-sdk
+export JAVA_HOME=/workspace/toolchain/jdk-21.0.12.1+1
+export ANDROID_HOME=/workspace/toolchain/android-sdk ANDROID_SDK_ROOT=/workspace/toolchain/android-sdk
 ./gradlew :data:test :engine:test :app:assembleDebug
 ```
 
@@ -68,11 +70,19 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   bundled `app/src/main/assets/xauusd_m1.csv.gz` is delivered as `assets/xauusd_m1.csv`.
   `DatasetImporter` reads both names and sniffs the gzip magic; never assume the `.gz` name
   survives to the device.
-- `gradlew clean` reinstalls nothing; the JDK/Android SDK are not part of the repo. In this
-  environment they were (re)installed to `~/tools/jdk-21.0.12.1+1` and `~/android-sdk`.
+- `gradlew clean` reinstalls nothing; the JDK/Android SDK are not part of the repo. They are
+  (re)installed to `/workspace/toolchain/…` (see Build & test), not `$HOME`, because the
+  sandbox home is not durable across sessions.
 
 ## Invariants
 
+- Chart geometry has exactly one source of truth: `ChartMath.plotRect(canvasWidth,
+  canvasHeight, axisWidthPx, bottomAxisPx)` returns the plot area (everything except the
+  right price gutter and the bottom time axis). `geometryFor` builds `ChartGeometry` from it
+  and every draw path, hit test and label derives from `geo.plot` / the `priceToY(.., PlotRect)`
+  / `yToPrice(.., PlotRect)` overloads. The plot layers are wrapped in `clipRect(plot..)` and
+  the gutter labels in `clipRect(plot.right .. size.width)`, so nothing can bleed over a
+  neighbouring strip/tab regardless of layout.
 - A candle may only be exposed when `ts <= ClockEngine.lastVisibleCandleTs(histNow)`
   (`CandleRepository` enforces this; never hand it a raw `histNow`).
 - Catch-up is deterministic: `AccountCheckpoint` (serialised `AccountState`) is written in
