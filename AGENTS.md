@@ -71,3 +71,7 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   never null for rows written by the engine. Legacy null rows are not migrated; use the
   debug "Reset season" action instead.
 - Process death must lose nothing: all authoritative state lives in Room, not in memory.
+- Debug-only actions ("Reset season", "Time travel +N") are gated by `BuildConfig.DEBUG`
+  in the UI. Time travel only shifts `Season.offsetMs` backwards (advancing `histNow`); it
+  touches no candle or trade data, is clamped so the last visible candle is never beyond
+  the dataset's last candle, and then runs the normal catch-up.

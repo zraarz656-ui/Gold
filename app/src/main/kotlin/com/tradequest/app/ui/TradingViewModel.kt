@@ -107,6 +107,10 @@ class TradingViewModel @Inject constructor(
     private val _marketClosed = MutableStateFlow(false)
     val marketClosed: StateFlow<Boolean> = _marketClosed.asStateFlow()
 
+    /** True after a debug time-travel found nothing left to replay. */
+    private val _timeTravelExhausted = MutableStateFlow(false)
+    val timeTravelExhausted: StateFlow<Boolean> = _timeTravelExhausted.asStateFlow()
+
     private val _riskPercent = MutableStateFlow(1.0)
     val riskPercent: StateFlow<Double> = _riskPercent.asStateFlow()
 
@@ -171,6 +175,25 @@ class TradingViewModel @Inject constructor(
             seasons.resetActive()
             startSeason()
             refreshDerived()
+        }
+    }
+
+    /**
+     * Debug-only: advance the replayed clock by [minutes] and run the normal catch-up.
+     * Only the season's clock offset changes; candle and trade data are untouched. The
+     * clock is clamped so it can never move past the last bundled candle.
+     */
+    fun debugTimeTravel(minutes: Long) {
+        viewModelScope.launch {
+            val season = seasons.active() ?: return@launch
+            val updated = seasons.timeTravel(season.id, minutes)
+            _timeTravelExhausted.value = updated == null
+            if (updated == null) return@launch
+            offsetMs = updated.offsetMs
+            _displayOffsetMs.value = offsetMs
+            controller.setDisplayOffset(offsetMs)
+            runCatchUp(initial = false)
+            loadInitialWindow()
         }
     }
 

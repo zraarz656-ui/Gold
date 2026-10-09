@@ -41,6 +41,8 @@ fun PositionsScreen(
     onCancel: (Long) -> Unit,
     onEditStops: (Long, Double?, Double?) -> Unit,
     onResetSeason: (() -> Unit)? = null,
+    onTimeTravel: ((Long) -> Unit)? = null,
+    timeTravelExhausted: Boolean = false,
 ) {
     val open = orders.filter { it.status == OrderStatus.OPEN }
     val pending = orders.filter { it.status == OrderStatus.PENDING }
@@ -70,7 +72,32 @@ fun PositionsScreen(
                 }
             }
         }
+        if (onTimeTravel != null) {
+            item { SectionHeader("Debug: time travel") }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    TIME_TRAVEL_MINUTES.forEach { minutes ->
+                        OutlinedButton(onClick = { onTimeTravel(minutes) }, modifier = Modifier.weight(1f)) {
+                            Text("+${labelFor(minutes)}")
+                        }
+                    }
+                }
+            }
+            item {
+                Text(
+                    if (timeTravelExhausted) "No candles left to replay" else "Shifts the replayed clock only; data is unchanged",
+                    color = Muted, fontSize = 10.sp,
+                )
+            }
+        }
     }
+}
+
+private val TIME_TRAVEL_MINUTES = listOf(10L, 60L, 240L, 1440L)
+
+private fun labelFor(minutes: Long): String = when (minutes) {
+    1440L -> "1d"
+    else -> "${minutes}m"
 }
 
 @Composable

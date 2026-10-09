@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.tradequest.app.BuildConfig
 import com.tradequest.chart.ChartPanel
 import com.tradequest.chart.CrosshairInfo
 import com.tradequest.chart.TIMEFRAMES
@@ -46,6 +47,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val offsetMs by viewModel.displayOffsetMs.collectAsStateWithLifecycle()
     val risk by viewModel.riskPercent.collectAsStateWithLifecycle()
     val marketClosed by viewModel.marketClosed.collectAsStateWithLifecycle()
+    val timeTravelExhausted by viewModel.timeTravelExhausted.collectAsStateWithLifecycle()
 
     if (startup.phase != StartupPhase.READY) {
         StartupOverlay(startup, modifier)
@@ -106,7 +108,13 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                     onClose = { id, lots -> viewModel.closePosition(id, lots) },
                     onCancel = { viewModel.cancelOrder(it) },
                     onEditStops = { id, sl, tp -> viewModel.editStops(id, sl, tp) },
-                    onResetSeason = { showResetConfirm = true },
+                    onResetSeason = if (BuildConfig.DEBUG) {
+                        { showResetConfirm = true }
+                    } else null,
+                    onTimeTravel = if (BuildConfig.DEBUG) {
+                        { minutes -> viewModel.debugTimeTravel(minutes) }
+                    } else null,
+                    timeTravelExhausted = timeTravelExhausted,
                 )
             }
         }

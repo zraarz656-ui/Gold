@@ -46,6 +46,29 @@ class SeasonRepository(
     fun histNow(season: Season, realNow: Long = clock()): Long =
         ClockEngine.histNow(realNow, season.offsetMs)
 
+    /**
+     * Debug-only: advance the replayed clock by [minutes] by pulling the season's offset
+     * back; no candle or trade data is touched. The normal catch-up then folds in the newly
+     * visible candles.
+     *
+     * The historical clock can never pass the dataset: if the shift would overshoot, it is
+     * clamped so the last visible candle is exactly the dataset's last candle. Returns the
+     * updated season, or null when there is nothing left to advance into.
+     */
+    suspend fun timeTravel(seasonId: Long, minutes: Long): Season? {
+        val season = db.seasonDao().byId(seasonId) ?: return null
+        val lastCandleTs = db.candleDao().maxTs() ?: return null
+        val currentLastVisible = ClockEngine.lastVisibleCandleTs(histNow(season))
+        // Clamp so the last visible candle is the dataset's last candle, never beyond it.
+        val maxHistNow = lastCandleTs + MarketTime.MINUTE_MS
+        val target = (histNow(season) + minutes * MarketTime.MINUTE_MS).coerceAtMost(maxHistNow)
+        if (ClockEngine.lastVisibleCandleTs(target) <= currentLastVisible) return null
+
+        val updated = season.copy(offsetMs = (clock() - target).coerceAtLeast(0L))
+        db.seasonDao().upsert(updated)
+        return updated
+    }
+
     /** Last candle the chart may show: the last fully closed minute at or before histNow. */
     fun lastVisibleCandleTs(season: Season, realNow: Long = clock()): Long =
         ClockEngine.lastVisibleCandleTs(histNow(season, realNow))
