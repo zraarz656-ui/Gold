@@ -40,6 +40,8 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val quote by viewModel.quote.collectAsStateWithLifecycle()
     val strip by viewModel.strip.collectAsStateWithLifecycle()
     val orders by viewModel.liveOrders.collectAsStateWithLifecycle()
+    val history by viewModel.history.collectAsStateWithLifecycle()
+    val offsetMs by viewModel.displayOffsetMs.collectAsStateWithLifecycle()
     val risk by viewModel.riskPercent.collectAsStateWithLifecycle()
     val marketClosed by viewModel.marketClosed.collectAsStateWithLifecycle()
 
@@ -77,14 +79,6 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                 if (marketClosed) {
                     MarketClosedBanner(Modifier.align(Alignment.Center).padding(8.dp))
                 }
-                Row(
-                    Modifier.align(Alignment.BottomStart).padding(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Chip("+", selected = false, onClick = { controller.zoomByFactor(1.25f) })
-                    Chip("-", selected = false, onClick = { controller.zoomByFactor(0.8f) })
-                    Chip("Fit", selected = false, onClick = { controller.autoFitPrice() })
-                }
             }
             if (marketClosed) {
                 ClosedFooter()
@@ -103,6 +97,8 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
             Box(Modifier.weight(1f)) {
                 PositionsScreen(
                     orders = orders,
+                    closed = history,
+                    displayOffsetMs = offsetMs,
                     bid = quote.bid,
                     onClose = { id, lots -> viewModel.closePosition(id, lots) },
                     onCancel = { viewModel.cancelOrder(it) },

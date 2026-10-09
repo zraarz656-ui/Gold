@@ -26,6 +26,7 @@ import com.tradequest.data.TradeQuestDatabase
 import com.tradequest.data.TradingRepository
 import com.tradequest.engine.AccountState
 import com.tradequest.engine.Candle
+import com.tradequest.engine.ClosedPosition
 import com.tradequest.engine.ClockEngine
 import com.tradequest.engine.FillEngine
 import com.tradequest.engine.MarketCalendar
@@ -114,11 +115,20 @@ class TradingViewModel @Inject constructor(
     private var offsetMs: Long = 0L
     private var ready = false
 
+    /** Historical-clock shift; displayed times = stored UTC + this, in the device zone. */
+    private val _displayOffsetMs = MutableStateFlow(0L)
+    val displayOffsetMs: StateFlow<Long> = _displayOffsetMs.asStateFlow()
+
     private val seasonFlow = seasons.activeFlow()
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val liveOrders: StateFlow<List<TradeOrder>> = seasonFlow
         .flatMapLatest { s -> if (s == null) flowOf(emptyList()) else trading.liveOrders(s.id) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val history: StateFlow<List<TradeOrder>> = seasonFlow
+        .flatMapLatest { s -> if (s == null) flowOf(emptyList()) else trading.closedSince(s.id, s.lastProcessedTs) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
@@ -138,6 +148,7 @@ class TradingViewModel @Inject constructor(
         val season = seasons.ensureSeason()
         seasonId = season.id
         offsetMs = season.offsetMs
+        _displayOffsetMs.value = offsetMs
         controller.setDisplayOffset(offsetMs)
 
         runCatchUp(initial = true)

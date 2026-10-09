@@ -35,6 +35,10 @@ class TradingRepository(private val db: TradeQuestDatabase) {
 
     fun allOrders(seasonId: Long): Flow<List<TradeOrder>> = db.tradeOrderDao().bySeasonFlow(seasonId)
 
+    /** Closed trades whose stored `closedAt` is at or after [sinceTs] (or never set). */
+    fun closedSince(seasonId: Long, sinceTs: Long): Flow<List<TradeOrder>> =
+        db.tradeOrderDao().closedFlow(seasonId, sinceTs)
+
     suspend fun order(id: Long): TradeOrder? = db.tradeOrderDao().byId(id)
 
     suspend fun place(seasonId: Long, request: OrderRequest, histNow: Long): Long {

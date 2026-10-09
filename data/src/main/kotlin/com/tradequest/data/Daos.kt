@@ -127,6 +127,12 @@ interface TradeOrderDao {
 
     @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED' ORDER BY closedAt ASC, id ASC")
     suspend fun closed(seasonId: Long): List<TradeOrder>
+
+    @Query(
+        "SELECT * FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED' " +
+            "AND (closedAt IS NULL OR closedAt >= :sinceTs) ORDER BY closedAt ASC, id ASC",
+    )
+    fun closedFlow(seasonId: Long, sinceTs: Long): Flow<List<TradeOrder>>
 }
 
 @Dao

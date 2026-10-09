@@ -148,11 +148,27 @@ fun CandleChart(
                             emitCrosshair(controller, change.position.x, change.position.y, geo, currentOnCrosshair)
                         } else if (contacts >= 2) {
                             pinching = true
-                            currentDebug?.mode = "PINCH"
-                            val zoom = event.calculateZoom()
-                            val centroid = event.calculateCentroid()
-                            currentDebug?.lastZoom = zoom
-                            if (zoom != 1f && centroid != Offset.Unspecified) controller.zoom(centroid.x, zoom)
+                            if (onAxis) {
+                                // Two fingers on the gutter scale the price range.
+                                currentDebug?.mode = "PRICE_SCALE"
+                                if (!scaleStarted) {
+                                    scaleStarted = true
+                                    scaleStartMin = geo.priceRange.min
+                                    scaleStartMax = geo.priceRange.max
+                                }
+                                controller.setManualPriceRange(scaleStartMin, scaleStartMax)
+                                val factor = GestureMath.priceScaleFactor(
+                                    change.position.y - down.position.y, geo.height,
+                                )
+                                controller.scalePriceRange(factor)
+                                currentDebug?.lastZoom = factor.toFloat()
+                            } else {
+                                currentDebug?.mode = "PINCH"
+                                val zoom = event.calculateZoom()
+                                val centroid = event.calculateCentroid()
+                                currentDebug?.lastZoom = zoom
+                                if (zoom != 1f && centroid != Offset.Unspecified) controller.zoom(centroid.x, zoom)
+                            }
                             event.changes.forEach { it.consume() }
                         } else if (onAxis) {
                             currentDebug?.mode = "PRICE_SCALE"

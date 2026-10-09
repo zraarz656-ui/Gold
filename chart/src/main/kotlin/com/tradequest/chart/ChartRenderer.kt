@@ -12,19 +12,12 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.sp
 import com.tradequest.engine.Candle
-import com.tradequest.engine.Timeframe
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
 
 const val PRICE_LABEL_MIN_GAP_DP = 20.0f
 const val TIME_LABEL_MIN_GAP_DP = 64.0f
-
-private val DAY_MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM dd", Locale.US)
 
 /** Plot rectangle + resolved price range + visible bar window for one frame. */
 fun geometryFor(state: ChartState, sizePx: Size, axisWidthPx: Float, bottomAxisPx: Float): ChartGeometry {
@@ -279,6 +272,8 @@ fun DrawScope.drawTimeAxis(state: ChartState, geo: ChartGeometry, textMeasurer: 
     for (t in ticks) {
         val x = ChartMath.indexToX(t.index.toFloat(), vp)
         if (x < geo.left - 6f || x > geo.right) continue
+        // Draw the ticks the label marks: a short vertical line at the tick, then the text.
+        drawLine(theme.grid, Offset(x, axisTop), Offset(x, axisTop + 4f), 1f)
         drawAxisLabel(textMeasurer, theme, formatTimeLabel(t.displayTs, state.timeframe), x + 3f, axisTop + 4f)
     }
 }
@@ -290,13 +285,4 @@ fun DrawScope.drawMarketClosedBanner(state: ChartState, geo: ChartGeometry, text
     val cy = (geo.top + geo.bottom) / 2f
     drawRect(Color(0xCC1A1F27), Offset(cx - 92f, cy - 20f), Size(184f, 40f))
     drawText(textMeasurer, text, Offset(cx - 78f, cy - 10f), TextStyle(Color(0xFFFFB300), 16.sp))
-}
-
-fun formatTimeLabel(ts: Long, tf: Timeframe): String {
-    val z = Instant.ofEpochMilli(ts).atZone(ZoneOffset.UTC)
-    return when (tf) {
-        Timeframe.M1, Timeframe.M15, Timeframe.H1, Timeframe.H4 ->
-            String.format("%02d:%02d", z.hour, z.minute)
-        else -> DAY_MONTH.format(z)
-    }
 }

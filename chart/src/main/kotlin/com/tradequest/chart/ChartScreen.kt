@@ -28,8 +28,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tradequest.engine.NewsEvent
 import com.tradequest.engine.Timeframe
-import java.time.Instant
-import java.time.ZoneOffset
 
 /**
  * The Phase 2 chart screen: a candle chart with a timeframe selector, a crosshair readout,
@@ -128,6 +126,7 @@ fun ChartPanel(
         if (ch != null) {
             CrosshairReadout(controller, ch, Modifier.align(Alignment.TopEnd).padding(top = 62.dp))
         }
+        ChartZoomButtons(controller, Modifier.align(Alignment.TopStart).padding(6.dp))
         if (!state.liveEdgeFollowing) {
             JumpToLatestBadge(controller, Modifier.align(Alignment.BottomEnd))
         }
@@ -144,6 +143,31 @@ fun ChartPanel(
         if (showFps) FpsOverlay(Modifier.align(Alignment.BottomEnd))
     }
     newsPopup?.let { ev -> NewsDialog(ev, state.displayOffsetMs) { newsPopup = null } }
+}
+
+/**
+ * Small semi-transparent zoom/auto-fit buttons floating over the plot's top-left corner,
+ * so they never overlap the time axis (which sits along the bottom).
+ */
+@Composable
+fun ChartZoomButtons(controller: ChartController, modifier: Modifier = Modifier) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        GhostButton("+") { controller.zoomByFactor(1.25f) }
+        GhostButton("–") { controller.zoomByFactor(0.8f) }
+        GhostButton("⤢") { controller.autoFitPrice() }
+    }
+}
+
+@Composable
+private fun GhostButton(label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .background(Color(0x661A1F27), RoundedCornerShape(4.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Text(label, color = Color(0xCCFFFFFF), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+    }
 }
 
 /** The Phase 2 developer bar: live toggle, draw mode, auto-fit and theme pills. */
@@ -245,13 +269,8 @@ fun Pill(label: String, state: ChartState, selected: Boolean = false, onClick: (
 private fun NewsDialog(news: NewsEvent, displayOffsetMs: Long, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(formatDateTime(news.ts + displayOffsetMs)) },
+        title = { Text(formatShortDateTime(news.ts + displayOffsetMs)) },
         text = { Text("${news.impact}  ${news.title}") },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
-}
-
-private fun formatDateTime(ts: Long): String {
-    val z = Instant.ofEpochMilli(ts).atZone(ZoneOffset.UTC)
-    return String.format("%04d-%02d-%02d %02d:%02d", z.year, z.monthValue, z.dayOfMonth, z.hour, z.minute)
 }
