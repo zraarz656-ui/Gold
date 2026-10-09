@@ -104,8 +104,9 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   handle > line/tag) from the same `LevelGeometry` constants the renderer draws with. The
   gesture loop is the **only** place a level drag begins; `ChartController.beginLevelDrag` /
   `updateLevelDrag` / `endLevelDrag` own the preview, which survives `setOverlay` rebuilds so
-  an in-flight drag is never clobbered. `TradeQuestScreen` confirms every `Set` via the chip
-  before `TradingViewModel.applyLevelOutcome` persists it through `TradingRepository`.
+  an in-flight drag is never clobbered. `TradeQuestScreen` shows the confirm chip only for a
+  fresh handle level (`LevelOutcome.Set.isNew`); moving an existing line commits on release.
+  Both persist through `TradingViewModel.applyLevelOutcome` → `TradingRepository`.
 - Every closed trade carries `closedAt` = the timestamp of the candle whose processing
   closed it (`ClosedPosition.closeTs`): SL/TP/stop-out use the candle that triggered them,
   a manual close uses the season's last visible candle. `closedAt` is never wall-clock and

@@ -124,12 +124,19 @@ fun ChartPanel(
             onNewsTap = { newsPopup = it; onNewsTap(it) },
             onLevelOutcome = { outcome ->
                 when (outcome) {
-                    // A new/moved level waits for the user to confirm; the preview line stays.
-                    is LevelOutcome.Set -> confirm = LevelConfirm(outcome) { ok ->
-                        confirm = null
-                        controller.cancelLevelDrag()
-                        if (ok) onLevelOutcome(outcome)
-                    }
+                    // A freshly drawn "+SL"/"+TP" waits for confirmation (the preview stays);
+                    // moving an existing line commits on release — the drag itself was the confirm.
+                    is LevelOutcome.Set ->
+                        if (outcome.isNew) {
+                            confirm = LevelConfirm(outcome) { ok ->
+                                confirm = null
+                                controller.cancelLevelDrag()
+                                if (ok) onLevelOutcome(outcome)
+                            }
+                        } else {
+                            controller.cancelLevelDrag()
+                            onLevelOutcome(outcome)
+                        }
                     is LevelOutcome.Rejected -> { controller.cancelLevelDrag(); onMessage(outcome.message) }
                     else -> { controller.cancelLevelDrag(); onLevelOutcome(outcome) }
                 }
