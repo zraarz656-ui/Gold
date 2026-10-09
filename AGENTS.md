@@ -117,6 +117,13 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   in the UI. Time travel only shifts `Season.offsetMs` backwards (advancing `histNow`); it
   touches no candle or trade data, is clamped so the last visible candle is never beyond
   the dataset's last candle, and then runs the normal catch-up.
+- Chart screen layout: one header row holds the Chart/Positions tabs, the timeframes
+  (horizontally scrollable) and a "⋮" button opening the `ChartSettingsSheet` (theme +
+  label size, persisted through `TradingViewModel.setTheme/setLabelSize`). The plot keeps
+  at least 55% of a 20:9 screen (`ChartHeightTest`). The right price gutter is measured
+  from the widest label (`ChartGutter`) and the current-price pill fills it, so it always
+  fits and never spills past the screen edge. Entry tags within 20dp merge into one
+  "N pos  pnl" tag (`EntryGroups`), drawn and hit-tested from the same geometry.
 
 ## Pushing (auth note, current environment)
 - `git push` with the default remote prompts for a username and hangs. The configured
