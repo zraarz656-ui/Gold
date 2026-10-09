@@ -316,11 +316,18 @@ private fun DataPanel(stats: DataStats) {
         DataRow("Weeks ahead of histNow", "${stats.weeksAhead}")
         DataRow("Data source", stats.source.label)
         DataRow("Asset", stats.assetName ?: "—")
+        DataRow("Meta source", stats.metaSource ?: "—")
+        DataRow("Fetched at", stats.metaFetchedAt ?: "—")
+        DataRow("Meta row count", if (stats.metaRowCount > 0L) "${stats.metaRowCount}" else "—")
+        stats.failureReason?.let { DataRow("Rejected", it) }
         if (stats.source == DatasetSource.FAKE) {
             DataRow(
                 "",
                 "PLACEHOLDER — bundled asset missing or < ${DatasetImporter.MIN_EXPECTED_ROWS} rows",
             )
+        }
+        if (stats.source == DatasetSource.UNVERIFIED) {
+            DataRow("", "UNVERIFIED — bundled asset failed checksum/structure checks")
         }
     }
 }

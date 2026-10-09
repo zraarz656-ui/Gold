@@ -16,6 +16,7 @@ import com.tradequest.data.CatchUpProcessor
 import com.tradequest.data.DailyStatsDao
 import com.tradequest.data.DatabaseIntrospector
 import com.tradequest.data.DatasetImporter
+import com.tradequest.data.DatasetMeta
 import com.tradequest.data.DatasetSource
 import com.tradequest.data.EquitySnapshotDao
 import com.tradequest.data.EquitySnapshotEntity
@@ -86,6 +87,12 @@ data class DataStats(
     val weeksAhead: Int = 0,
     val source: DatasetSource = DatasetSource.MISSING,
     val assetName: String? = null,
+    /** Provenance from the meta file, when present: source / fetchedAt / rowCount. */
+    val metaSource: String? = null,
+    val metaFetchedAt: String? = null,
+    val metaRowCount: Long = 0L,
+    /** Why the dataset was rejected, when the error screen is showing. */
+    val failureReason: String? = null,
 )
 
 data class AccountStrip(
@@ -199,10 +206,11 @@ class TradingViewModel @Inject constructor(
         // superseded by a real import (or surfaced as an error) once the bundle is present.
         // `force` rewrites candle_1m and news_event only, preserving trades/season rows.
         val needsImport = importedRows < DatasetImporter.MIN_EXPECTED_ROWS ||
-            storedSource == null || storedSource == DatasetSource.MISSING || storedSource == DatasetSource.FAKE
+            storedSource == null || storedSource == DatasetSource.MISSING ||
+            storedSource == DatasetSource.FAKE || storedSource == DatasetSource.UNVERIFIED
         if (needsImport) {
             val result = DatasetImporter.import(db, assets, force = true) { p -> reportImport(p) }
-            if (result.source == DatasetSource.MISSING) {
+            if (result.source == DatasetSource.MISSING || result.source == DatasetSource.UNVERIFIED) {
                 _startup.value = StartupState(
                     phase = StartupPhase.ERROR,
                     error = missingAssetMessage(result),
@@ -230,6 +238,7 @@ class TradingViewModel @Inject constructor(
     }
 
     private fun missingAssetMessage(result: ImportResult): String {
+        result.failureReason?.let { return "Dataset rejected.\n\n$it" }
         val name = result.assetName ?: DatasetImporter.CANDLE_ASSET
         return "Bundled market data is missing or too small.\n\n" +
             "Looked for assets/$name (and ${DatasetImporter.CANDLE_ASSET_PLAIN}); " +
@@ -336,6 +345,7 @@ class TradingViewModel @Inject constructor(
         val weeksAhead = if (summary.lastTs > lastVisible) {
             ((summary.lastTs - lastVisible) / MarketTime.WEEK_MS).toInt()
         } else 0
+        val meta = DatasetMeta.read(assets)
         _dataStats.value = DataStats(
             rowCount = summary.candleCount,
             firstTs = summary.firstTs,
@@ -349,6 +359,10 @@ class TradingViewModel @Inject constructor(
             source = DatasetSource.fromId(settings.get(SettingsRepository.DATA_SOURCE, ""))
                 ?: DatasetSource.MISSING,
             assetName = DatasetImporter.bundledCandleAsset(assets),
+            metaSource = meta?.source,
+            metaFetchedAt = meta?.fetchedAt,
+            metaRowCount = meta?.rowCount ?: 0L,
+            failureReason = _startup.value.error,
         )
     }
 
