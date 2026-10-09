@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -103,6 +104,7 @@ fun ChartPanel(
     onNewsTap: (NewsEvent) -> Unit = {},
     onLevelOutcome: (LevelOutcome) -> Unit = {},
     onMessage: (String) -> Unit = {},
+    onEntryGroupTap: () -> Unit = {},
     debug: GestureDebug? = null,
     liveRunning: Boolean = false,
     showFps: Boolean = false,
@@ -122,6 +124,7 @@ fun ChartPanel(
             crosshair = crosshair,
             onCrosshairChange = onCrosshairChange,
             onNewsTap = { newsPopup = it; onNewsTap(it) },
+            onEntryGroupTap = onEntryGroupTap,
             onLevelOutcome = { outcome ->
                 when (outcome) {
                     // A freshly drawn "+SL"/"+TP" waits for confirmation (the preview stays);
@@ -152,7 +155,7 @@ fun ChartPanel(
         if (ch != null) {
             CrosshairReadout(controller, ch, Modifier.align(Alignment.TopEnd).padding(top = 62.dp))
         }
-        ChartZoomButtons(controller, Modifier.align(Alignment.TopStart).padding(6.dp))
+        ChartFitButton(controller, Modifier.align(Alignment.TopStart).padding(6.dp))
         if (!state.liveEdgeFollowing) {
             JumpToLatestBadge(controller, Modifier.align(Alignment.BottomEnd))
         }
@@ -172,27 +175,19 @@ fun ChartPanel(
 }
 
 /**
- * Small semi-transparent zoom/auto-fit buttons floating over the plot's top-left corner,
- * so they never overlap the time axis (which sits along the bottom).
+ * A single small semi-transparent "Fit" button floating over the plot's top-left corner,
+ * so it never overlaps the time axis (which sits along the bottom). Pinch handles zoom.
  */
 @Composable
-fun ChartZoomButtons(controller: ChartController, modifier: Modifier = Modifier) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        GhostButton("+") { controller.zoomByFactor(1.25f) }
-        GhostButton("–") { controller.zoomByFactor(0.8f) }
-        GhostButton("⤢") { controller.autoFitPrice() }
-    }
-}
-
-@Composable
-private fun GhostButton(label: String, onClick: () -> Unit) {
+fun ChartFitButton(controller: ChartController, modifier: Modifier = Modifier) {
     Box(
-        Modifier
+        modifier
+            .size(36.dp)
             .background(Color(0x661A1F27), RoundedCornerShape(4.dp))
-            .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .clickable { controller.autoFitPrice() },
+        contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = Color(0xCCFFFFFF), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text("Fit", color = Color(0xCCFFFFFF), fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
 }
 

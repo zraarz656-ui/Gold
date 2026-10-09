@@ -59,6 +59,7 @@ fun DrawScope.drawChart(
     paths: CandlePaths,
     crosshair: CrosshairInfo?,
     density: Float = 1f,
+    measure: TagTextMeasure = TagTextMeasure.Approximate,
 ) {
     val theme = state.theme
     val priceTicks = ChartMath.niceTicks(geo.priceRange.min, geo.priceRange.max, 6)
@@ -99,7 +100,7 @@ fun DrawScope.drawChart(
 
     // Nothing in the far-right gutter may cover the pinned price tags; the order tags are
     // drawn first, over the candles, but they never reach into that gutter.
-    drawOrderOverlays(state, geo, textMeasurer)
+    drawOrderOverlays(state, geo, textMeasurer, measure)
 
     // Grid price labels live in the right gutter; clipped there so they never cover the plot.
     clipRect(plot.right, 0f, size.width, size.height) {
@@ -135,11 +136,26 @@ fun DrawScope.drawChart(
  * fits. Each is outlined and bold; draggable SL/TP carry an "x" close box. Tags are stacked
  * by [TagLayout] so no two overlap and none runs off the plot edges.
  */
+internal fun DrawScope.orderTagWidth(
+    measure: TagTextMeasure,
+    text: String,
+    density: Float,
+    scale: Float,
+    closeBox: Boolean,
+): Float = LevelGeometry.orderTagWidth(measure, text, density, scale, closeBox)
+
+/**
+ * The order tags (entry/SL/TP/pending) and their "+SL"/"+TP" handles. Each tag shrinks to
+ * its text and is right-aligned against the plot's right edge, drawn at
+ * [LevelGeometry.ORDER_TAG_OPACITY] so the candles stay visible through it. Entries that
+ * sit within 20dp of each other collapse into one grouped "N pos" tag (see [EntryGroups]).
+ */
 private fun DrawScope.drawOrderOverlays(
     state: ChartState,
     geo: ChartGeometry,
     textMeasurer: TextMeasurer,
-) {
+    measure: TagTextMeasure,
+): List<TagRect> {
     val plot = geo.plot
     val scale = state.labelScale
     val density = state.density
@@ -148,45 +164,70 @@ private fun DrawScope.drawOrderOverlays(
     val tagH = LevelGeometry.tagHeight(density, scale)
     val closeW = LevelGeometry.closeBox(density, scale)
 
-    clipRect(plot.left, plot.top, plot.right, plot.bottom) {
+    // Entries that sit within 20dp of each other merge into one grouped tag, so the hit
+    // test and the renderer compute the same clusters.
+    val groups = entryGroupsFor(state, geo)
+    val groupedIds = groups.flatMap { it.ids }.toSet()
 
-        // Collect every tagged line (committed plus the drag in flight) with its desired Y.
-        data class Tag(val line: ChartOrderLine, val y: Float, val closeBox: Boolean)
-        val wanted = ArrayList<Tag>()
-        for (line in state.orderLines) {
-            if (preview != null && preview.line.id == line.id && preview.line.kind == line.kind) continue
-            val yRaw = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
-            if (yRaw < plot.top - tagH || yRaw > plot.bottom + tagH) continue
-            wanted.add(Tag(line, yRaw.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f), line.needsCloseBox()))
+    // Every tagged line (committed plus the drag in flight) with its desired Y.
+    data class Tag(val line: ChartOrderLine, val y: Float, val closeBox: Boolean)
+    val wanted = ArrayList<Tag>()
+    for (line in state.orderLines) {
+        if (preview != null && preview.line.id == line.id && preview.line.kind == line.kind) continue
+        if (line.id in groupedIds) continue
+        val yRaw = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
+        if (yRaw < plot.top - tagH || yRaw > plot.bottom + tagH) continue
+        val y = yRaw.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f)
+        wanted.add(Tag(line, y, line.needsCloseBox()))
     }
     preview?.let {
         val yRaw = ChartMath.priceToY(it.price, geo.priceRange, plot)
         wanted.add(Tag(it.line, yRaw.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f), it.line.needsCloseBox()))
     }
 
-    // The free order tags are laid out so no two overlap.
+    // The free tags are laid out so no two overlap.
     val centers = wanted.map { it.y }
     val placed = TagLayout.place(centers, tagH, plot.top, plot.bottom)
 
-    val textSize = (12f * scale).sp
+    val textSize = (LevelGeometry.ORDER_TAG_SP * scale).sp
     for ((i, tag) in wanted.withIndex()) {
         val line = tag.line
-        val rect = TagGeom.orderTag(plot, placed[i], density, scale)
+        val text = line.tagText()
+        val width = LevelGeometry.orderTagWidth(measure, text, density, scale, tag.closeBox)
+        val rect = TagGeom.orderTag(plot, placed[i], width, density, scale)
+        // 85% opacity keeps the candles readable through the tag; contrast is measured
+        // against the tag's own colour, so "black or white text" still holds.
         val fill = TagStyle.ensureContrast(line.color(), ORDER_TAG_MIN_CONTRAST)
-        val textColor = TagStyle.textOn(fill)
+            .copy(alpha = LevelGeometry.ORDER_TAG_OPACITY)
+        val textColor = TagStyle.textOn(line.color())
         drawTagBox(rect, fill, theme, density)
         drawText(
-            textMeasurer, line.tagText(line.drawPrice),
-            Offset(rect.left + LevelGeometry.TAG_PAD_DP * density * scale, rect.top + (rect.height - 12f * scale) / 2f),
+            textMeasurer, text,
+            Offset(rect.left + LevelGeometry.TAG_PAD_DP * density * scale, rect.top + (rect.height - LevelGeometry.ORDER_TAG_SP * scale) / 2f),
             TextStyle(textColor, textSize, FontWeight.Bold),
         )
         if (tag.closeBox) {
-            // "x" box at the tag's right edge; its hit box mirrors the render exactly.
             val closeLeft = rect.right - closeW
             drawRect(Color(0x66000000), Offset(closeLeft, rect.top), Size(closeW, rect.height))
             drawLine(Color.White, Offset(closeLeft + closeW * 0.3f, rect.centerY - 4f * scale), Offset(closeLeft + closeW * 0.7f, rect.centerY + 4f * scale), 1.5f)
             drawLine(Color.White, Offset(closeLeft + closeW * 0.7f, rect.centerY - 4f * scale), Offset(closeLeft + closeW * 0.3f, rect.centerY + 4f * scale), 1.5f)
         }
+    }
+
+    // The grouped "N pos  pnl" tags, one per cluster of close entries. Tapping one opens
+    // the Positions tab (resolved by the hit test from the same rectangles).
+    val groupRects = ArrayList<TagRect>()
+    for (g in groups) {
+        val y = g.centerY.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f)
+        val rect = TagGeom.entryGroupTag(plot, y, density, scale)
+        groupRects.add(rect)
+        val text = groupTagText(g)
+        val fill = TagStyle.ensureContrast(if (g.positive) theme.up else theme.down, ORDER_TAG_MIN_CONTRAST)
+            .copy(alpha = LevelGeometry.ORDER_TAG_OPACITY)
+        drawTagBox(rect, fill, theme, density)
+        val measured = textMeasurer.measure(text, TextStyle(TagStyle.textOn(fill), textSize, FontWeight.Bold))
+        val tx = rect.left + (rect.width - measured.size.width) / 2f
+        drawText(measured, topLeft = Offset(tx, rect.centerY - measured.size.height / 2f))
     }
 
     // "+SL"/"+TP" handles for a reference line that has no such level yet, side by side.
@@ -213,7 +254,32 @@ private fun DrawScope.drawOrderOverlays(
             )
         }
     }
-    }
+    return groupRects
+}
+
+/** The text on a merged entry tag: "3 pos  -5.10", matching the entry tag's P&L format. */
+internal fun groupTagText(g: EntryGroup): String {
+    val pnl = g.pnl ?: return "${g.count} pos"
+    val sign = if (pnl >= 0) "+" else "-"
+    return "${g.count} pos  $sign%.2f".format(java.util.Locale.US, kotlin.math.abs(pnl))
+}
+
+/**
+ * The merged entry groups for a frame, shared by the renderer and the hit test so a tap on
+ * a "N pos" tag lands exactly where the tag is drawn. Pure given the geometry.
+ */
+fun entryGroupsFor(state: ChartState, geo: ChartGeometry): List<EntryGroup> {
+    val points = state.orderLines
+        .filter { it.kind == OrderLineKind.ENTRY }
+        .map { line ->
+            EntryPoint(
+                ids = listOf(line.id),
+                y = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot),
+                pnl = line.pnlText?.toDoubleOrNull(),
+                positive = line.positive,
+            )
+        }
+    return EntryGroups.cluster(points, EntryGroups.MIN_GAP_DP * state.density)
 }
 
 /** A filled pill with rounded corners and a theme-aware hairline outline. */
@@ -331,7 +397,7 @@ private fun DrawScope.drawOrderLinesHook(state: ChartState, geo: ChartGeometry, 
 }
 
 /** Tag text for a line, rebuilt from the drawn price so it updates while dragging. */
-private fun ChartOrderLine.tagText(price: Double = drawPrice): String {
+internal fun ChartOrderLine.tagText(price: Double = drawPrice): String {
     val ctx = levelContext()
     return when (kind) {
         OrderLineKind.SL, OrderLineKind.TP -> LevelRules.levelTag(kind, ctx, price)
@@ -340,7 +406,7 @@ private fun ChartOrderLine.tagText(price: Double = drawPrice): String {
     }
 }
 
-private fun ChartOrderLine.needsCloseBox(): Boolean =
+internal fun ChartOrderLine.needsCloseBox(): Boolean =
     draggable && (kind == OrderLineKind.SL || kind == OrderLineKind.TP)
 
 private fun ChartOrderLine.color(): Color = TagStyle.orderColor(kind)

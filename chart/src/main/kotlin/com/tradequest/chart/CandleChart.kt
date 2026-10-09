@@ -21,8 +21,11 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toSize
 import com.tradequest.engine.NewsEvent
 import kotlin.math.abs
@@ -53,12 +56,34 @@ fun CandleChart(
     onCrosshairChange: (CrosshairInfo?) -> Unit = {},
     onNewsTap: (NewsEvent) -> Unit = {},
     onLevelOutcome: (LevelOutcome) -> Unit = {},
+    onEntryGroupTap: () -> Unit = {},
 ) {
     val density = LocalDensity.current.density
-    val axisWidthPx = with(LocalDensity.current) { 60.dp.toPx() }
     val bottomAxisPx = with(LocalDensity.current) { 20.dp.toPx() }
     val textMeasurer = rememberTextMeasurer()
     val paths = remember { CandlePaths() }
+    // One measurer shared by the renderer and the hit test, so a tag's drawn width is
+    // exactly the width the hit test uses.
+    val tagMeasure = remember(textMeasurer) {
+        TagTextMeasure { text, sp ->
+            textMeasurer.measure(
+                text,
+                TextStyle(fontSize = sp.sp, fontWeight = FontWeight.Bold),
+            ).size.width.toFloat()
+        }
+    }
+    // The right gutter is measured from the widest label the pill and grid must hold, so
+    // the current-price pill always fits and nothing extends past the screen edge. Keyed on
+    // the label string so a same-width tick does not restart the input loop.
+    val pillLabel = formatPrice(controller.state.bars.lastOrNull()?.c ?: 0.0)
+    val axisWidthPx = remember(density, tagMeasure, controller.state.labelSize, pillLabel) {
+        val (pillSp, gridSp) = ChartGutter.sampleSizes(controller.state.labelScale)
+        ChartGutter.widthPx(
+            listOf(pillLabel to pillSp, pillLabel to gridSp),
+            tagMeasure,
+            density,
+        )
+    }
 
     var size by remember { mutableStateOf(Size.Zero) }
     var longPressActive by remember { mutableStateOf(false) }
@@ -70,6 +95,7 @@ fun CandleChart(
     val currentOnCrosshair by rememberUpdatedState(onCrosshairChange)
     val currentOnNewsTap by rememberUpdatedState(onNewsTap)
     val currentOnLevelOutcome by rememberUpdatedState(onLevelOutcome)
+    val currentOnEntryGroupTap by rememberUpdatedState(onEntryGroupTap)
 
     LaunchedEffect(displayOffsetMs) { controller.setDisplayOffset(displayOffsetMs) }
 
@@ -118,10 +144,13 @@ fun CandleChart(
                     var scaleStartMax = 0.0
                     // Tags and handles are draggable even inside the price gutter, so the hit
                     // test runs everywhere; a miss simply falls through to pan/scale as before.
+                    val hitGeo = geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx)
                     val levelHit: LevelHit? = LevelHitTest.hit(
                         controller.state.overlay,
-                        geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx),
+                        hitGeo,
                         down.position.x, down.position.y, controller.state.density, controller.state.labelScale,
+                        tagMeasure,
+                        entryGroupsFor(controller.state, hitGeo),
                     )
                     var levelDragging = false
                     val panSamples = ArrayList<Pair<Long, Float>>(16)
@@ -248,6 +277,9 @@ fun CandleChart(
                     } else if (levelHit is LevelHit.CloseBox && moved <= slop) {
                         // A tap on the "x": clear that level.
                         currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, levelHit.kind))
+                    } else if (levelHit is LevelHit.EntryGroupTag && moved <= slop) {
+                        // A tap on a merged "N pos" tag jumps to the Positions tab.
+                        currentOnEntryGroupTap()
                     } else if (levelHit is LevelHit.EntryTag && moved <= slop) {
                         // A tap on the entry: strip both levels from the position.
                         currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.SL))
@@ -293,7 +325,7 @@ fun CandleChart(
             },
     ) {
         val geo = geometryFor(controller.state, size, axisWidthPx, bottomAxisPx)
-        drawChart(controller.state, geo, textMeasurer, paths, crosshair, density)
+        drawChart(controller.state, geo, textMeasurer, paths, crosshair, density, tagMeasure)
         drawTimeAxis(controller.state, geo, textMeasurer, density)
         if (controller.state.marketClosed) drawMarketClosedBanner(controller.state, geo, textMeasurer)
     }

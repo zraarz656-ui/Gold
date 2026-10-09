@@ -334,6 +334,7 @@ class ChartController(
         is LevelHit.Line -> lineId
         is LevelHit.Handle -> lineId
         is LevelHit.EntryTag -> lineId
+        is LevelHit.EntryGroupTag -> -1L
     }
 
     private fun LevelHit.hitKind(): OrderLineKind = when (this) {
@@ -341,6 +342,7 @@ class ChartController(
         is LevelHit.Line -> kind
         is LevelHit.Handle -> kind
         is LevelHit.EntryTag -> OrderLineKind.ENTRY
+        is LevelHit.EntryGroupTag -> OrderLineKind.ENTRY
     }
 
     fun setMarketClosed(closed: Boolean) {

@@ -3,13 +3,27 @@ package com.tradequest.chart
 import kotlin.math.abs
 
 /**
+ * Measures the pixel width of a tag's text so a tag can shrink to fit its label exactly.
+ * The renderer supplies a real Compose measurer; tests supply a deterministic one, so the
+ * renderer and the hit test always agree on where a tag ends.
+ */
+fun interface TagTextMeasure {
+    fun width(text: String, sp: Float): Float
+
+    companion object {
+        /** A rough per-character estimate, only used when no real measurer is available. */
+        val Approximate = TagTextMeasure { text, sp -> text.length * sp * 0.55f }
+    }
+}
+
+/**
  * Shared geometry for the level tags and handles, in dp so it scales with the device and
  * the price-label-size setting. The renderer and the hit test both read these, so what you
  * see is exactly what you can grab.
  */
 object LevelGeometry {
-    /** Order-tag width; the tag grows left over the plot from the plot's right edge. */
-    const val ORDER_TAG_WIDTH_DP = 168f
+    /** Smallest an order tag may shrink to, so a glyph plus its padding always fit. */
+    const val MIN_ORDER_TAG_WIDTH_DP = 44f
 
     /** Tag height; also the line's touch target half-height. */
     const val TAG_HEIGHT_DP = 24f
@@ -31,13 +45,37 @@ object LevelGeometry {
     /** Corner radius of every tag pill. */
     const val TAG_RADIUS_DP = 6f
 
-    fun orderTagWidth(density: Float, scale: Float): Float = ORDER_TAG_WIDTH_DP * density * scale
+    /** The order-tag text size, matching the renderer. */
+    const val ORDER_TAG_SP = 12f
+
+    /** Order tags are drawn semi-transparent so the candles stay visible through them. */
+    const val ORDER_TAG_OPACITY = 0.85f
+
     fun tagHeight(density: Float, scale: Float): Float = TAG_HEIGHT_DP * density * scale
     fun closeBox(density: Float, scale: Float): Float = CLOSE_BOX_DP * density * scale
     fun priceTagWidth(density: Float, scale: Float): Float = PRICE_TAG_WIDTH_DP * density * scale
     fun priceTagHeight(density: Float, scale: Float): Float = PRICE_TAG_HEIGHT_DP * density * scale
     fun handleWidth(density: Float, scale: Float): Float = HANDLE_WIDTH_DP * density * scale
     fun handleHeight(density: Float, scale: Float): Float = HANDLE_HEIGHT_DP * density * scale
+
+    /**
+     * An order tag's width: the measured text plus padding, floored so it never collapses,
+     * and widened by the close box when the tag carries one. The tag is right-aligned
+     * against the plot's right edge and grows left.
+     */
+    fun orderTagWidth(
+        measure: TagTextMeasure,
+        text: String,
+        density: Float,
+        scale: Float,
+        closeBox: Boolean,
+    ): Float {
+        val textPx = measure.width(text, ORDER_TAG_SP * scale)
+        val padPx = 2f * TAG_PAD_DP * density * scale
+        val boxPx = if (closeBox) closeBox(density, scale) else 0f
+        val minPx = MIN_ORDER_TAG_WIDTH_DP * density * scale
+        return maxOf(textPx + padPx + boxPx, minPx)
+    }
 }
 
 /** What the finger landed on, if anything. */
@@ -51,16 +89,20 @@ sealed interface LevelHit {
     /** An empty entry's "+SL"/"+TP" handle: drag out a new level. */
     data class Handle(val lineId: Long, val kind: OrderLineKind) : LevelHit
 
-    /** The entry's own gutter tag: a tap clears every level on that position. */
+    /** The entry's own tag: a tap clears every level on that position. */
     data class EntryTag(val lineId: Long) : LevelHit
+
+    /** A grouped "N pos" tag: a tap opens the Positions tab. */
+    data object EntryGroupTag : LevelHit
 }
 
 /**
- * Screen-space hit testing for the order levels. Kept free of Compose so the tolerance
- * maths is unit-testable; the caller turns a resolved [LevelHit] into a [LevelEdit].
+ * Screen-space hit testing for the order levels and the merged entry groups. Kept free of
+ * Compose so the tolerance maths is unit-testable; the caller turns a resolved [LevelHit]
+ * into a [LevelEdit] or a tab switch.
  *
- * Priority, highest first: the "x" box, then a "+SL"/"+TP" handle (both small and
- * explicit), then the line/tag body.
+ * Priority, highest first: a grouped entry tag, then the "x" box, then a "+SL"/"+TP"
+ * handle (both small and explicit), then the line/tag body.
  */
 object LevelHitTest {
 
@@ -83,9 +125,17 @@ object LevelHitTest {
         y: Float,
         density: Float,
         labelScale: Float = 1f,
+        measure: TagTextMeasure = TagTextMeasure.Approximate,
+        groups: List<EntryGroup> = emptyList(),
     ): LevelHit? {
         val tol = tolerancePx(density)
         val plot = geo.plot
+
+        // 0. A grouped entry tag sits over everything; tapping it opens the Positions tab.
+        groups.forEach { g ->
+            val band = TagGeom.entryGroupTag(plot, g.centerY, density, labelScale)
+            if (band.contains(x, y)) return LevelHit.EntryGroupTag
+        }
 
         // 1. "+SL"/"+TP" handles, drawn at the plot's right edge inside the gutter.
         overlay.lines.forEach { line ->
@@ -97,14 +147,14 @@ object LevelHitTest {
         // 2. The reference lines' own tags: a tap clears every level on the position/order.
         overlay.lines
             .filter { it.kind == OrderLineKind.ENTRY || it.kind == OrderLineKind.PENDING }
-            .firstOrNull { inTagBody(it, geo, x, y, density, labelScale) }
+            .firstOrNull { inTagBody(it, geo, x, y, density, labelScale, measure) }
             ?.let { return LevelHit.EntryTag(it.id) }
 
         // 3. The "x" box on an SL/TP tag: tap to clear that level. (A pending trigger's own
         //    tag clears every level instead; see branch 2.)
         overlay.lines
             .filter { it.kind == OrderLineKind.SL || it.kind == OrderLineKind.TP }
-            .firstOrNull { inCloseBox(it, geo, x, y, density, labelScale) }
+            .firstOrNull { inCloseBox(it, geo, x, y, density, labelScale, measure) }
             ?.let { return LevelHit.CloseBox(it.id, it.kind) }
 
         overlay.lines
@@ -122,10 +172,13 @@ object LevelHitTest {
         return null
     }
 
-    private fun inTagBody(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float): Boolean {
+    private fun tagWidth(line: ChartOrderLine, density: Float, scale: Float, measure: TagTextMeasure): Float =
+        LevelGeometry.orderTagWidth(measure, line.tagText(), density, scale, line.needsCloseBox())
+
+    private fun inTagBody(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float, measure: TagTextMeasure): Boolean {
         val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
         val right = geo.plot.right
-        val left = right - LevelGeometry.orderTagWidth(density, scale)
+        val left = right - tagWidth(line, density, scale, measure)
         return x in left..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
     }
 
@@ -144,10 +197,11 @@ object LevelHitTest {
         return x in left..right && abs(y - y0) <= DEFAULT_TOLERANCE_DP * 1.5f
     }
 
-    private fun inCloseBox(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float): Boolean {
+    private fun inCloseBox(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float, measure: TagTextMeasure): Boolean {
         val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
         val right = geo.plot.right
-        val left = right - LevelGeometry.closeBox(density, scale)
-        return x in left..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
+        val left = right - tagWidth(line, density, scale, measure)
+        val boxLeft = right - LevelGeometry.closeBox(density, scale)
+        return x in maxOf(left, boxLeft - 2f)..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
     }
 }

@@ -13,7 +13,7 @@ class LevelHitTestTest {
     private val density = 1f
 
     private fun entry(handles: List<OrderLineKind>, entry: Double = 2400.0) = ChartOrderLine(
-        id = 1, kind = OrderLineKind.ENTRY, price = entry, draggable = false,
+        id = 1, kind = OrderLineKind.ENTRY, price = entry, label = "Entry 1.0L", draggable = false,
         side = Side.LONG, lots = 1.0, entryPrice = entry, handles = handles,
     )
 
@@ -82,8 +82,8 @@ class LevelHitTestTest {
     fun `a tap on the entry tag clears the position's levels`() {
         val ov = overlay(entry(listOf(OrderLineKind.SL)), level(OrderLineKind.TP, 2410.0))
         val y = ChartMath.priceToY(2400.0, range, geo.plot)
-        // Left of the "+SL" handle band, but inside the entry tag body.
-        val tagX = geo.right - 100f
+        // Inside the entry tag body but clear of the "+SL" handle band at the plot edge.
+        val tagX = geo.right - 60f
         assertEquals(LevelHit.EntryTag(1), LevelHitTest.hit(ov, geo, tagX, y, density))
     }
 

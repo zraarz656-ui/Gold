@@ -17,16 +17,21 @@ data class TagRect(val left: Float, val top: Float, val right: Float, val bottom
  */
 object TagGeom {
 
-    fun orderTag(plot: PlotRect, centerY: Float, density: Float, scale: Float): TagRect {
+    fun orderTag(plot: PlotRect, centerY: Float, width: Float, density: Float, scale: Float): TagRect {
         val h = LevelGeometry.tagHeight(density, scale)
-        val w = LevelGeometry.orderTagWidth(density, scale)
         val y = centerY.coerceIn(plot.top + h / 2f, plot.bottom - h / 2f)
-        return TagRect(plot.right - w, y - h / 2f, plot.right, y + h / 2f)
+        return TagRect(plot.right - width, y - h / 2f, plot.right, y + h / 2f)
     }
+
+    /** The merged "N pos" entry tag: a fixed band at the plot's right edge. */
+    fun entryGroupTag(plot: PlotRect, centerY: Float, density: Float, scale: Float): TagRect =
+        orderTag(plot, centerY, LevelGeometry.MIN_ORDER_TAG_WIDTH_DP * 1.6f * density * scale, density, scale)
 
     fun priceTag(screenWidth: Float, plot: PlotRect, centerY: Float, density: Float, scale: Float): TagRect {
         val h = LevelGeometry.priceTagHeight(density, scale)
-        val w = LevelGeometry.priceTagWidth(density, scale)
+        // The pill fills the gutter exactly, so it always fits the widest label and its
+        // right edge sits on the screen edge — nothing extends past it.
+        val w = maxOf(screenWidth - plot.right, LevelGeometry.priceTagWidth(density, scale))
         val y = centerY.coerceIn(plot.top + h / 2f, plot.bottom - h / 2f)
         return TagRect(screenWidth - w, y - h / 2f, screenWidth, y + h / 2f)
     }
