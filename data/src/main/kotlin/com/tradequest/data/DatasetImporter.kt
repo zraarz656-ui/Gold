@@ -1,13 +1,12 @@
 package com.tradequest.data
 
+import com.tradequest.engine.Candle
 import com.tradequest.engine.Impact
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.io.BufferedReader
 import java.io.InputStream
-import java.io.InputStreamReader
 import java.util.zip.GZIPInputStream
 
 /** Shape of the bundled news JSON. */
@@ -84,8 +83,6 @@ object DatasetImporter {
         }
 
         val assetName = bundledCandleAsset(assets)
-        val assetRows = assetName?.let { countAssetRows(assets, it) } ?: 0L
-        val assetUsable = assetRows >= minRows
 
         // A forced import replaces only candle_1m and news_event; the range is captured so a
         // change can flag the season (its clock offset depends on the dataset start).
@@ -96,44 +93,63 @@ object DatasetImporter {
             beforeEnd = db.candleDao().maxTs() ?: 0L
         }
 
+        val parsed = assetName?.let { readAsset(assets, it, onProgress) }
+        val assetRows = parsed?.candles?.size?.toLong() ?: 0L
+        val assetUsable = assetRows >= minRows
+
+        // Reject a present-but-unusable asset: never replay generated or unverified data.
         if (!assetUsable && !allowFake) {
-            // No usable bundled history: report it rather than quietly replaying a fake.
-            if (force) {
-                db.candleDao().deleteAll()
-                db.newsDao().deleteAll()
-            }
-            return@withContext ImportResult(
-                candleCount = db.candleDao().count(),
-                newsCount = db.newsDao().count(),
-                datasetStartMs = db.candleDao().minTs() ?: 0L,
-                datasetEndMs = db.candleDao().maxTs() ?: 0L,
-                source = DatasetSource.MISSING,
-                assetName = assetName,
-                assetRows = assetRows,
+            if (force) clearData(db)
+            return@withContext rejected(
+                db, DatasetSource.MISSING, assetName, assetRows,
+                reason = if (assetName == null)
+                    "no bundled candle asset found (assets/${CANDLE_ASSET})"
+                else
+                    "bundled asset has $assetRows rows, need at least $minRows",
             )
         }
 
-        if (force) {
-            db.candleDao().deleteAll()
-            db.newsDao().deleteAll()
-        }
+        if (force) clearData(db)
 
-        val source: DatasetSource
-        if (assetUsable) {
-            val name = assetName!!
-            importCandles(db, assets, name, onProgress)
-            source = DatasetSource.BUNDLED
-        } else {
+        if (!assetUsable) {
             importFake(db, onProgress)
-            source = DatasetSource.FAKE
+            return@withContext finish(db, DatasetSource.FAKE, assetName, assetRows, beforeStart, beforeEnd)
         }
-        importNews(db, assets, onProgress)
 
+        // Present and large enough: verify provenance (meta/sha256/rowCount) and structure.
+        val name = assetName!!
+        val structural = parsed!!.candles.map { Candle(it.ts, it.o, it.h, it.l, it.c, it.tickVolume) }
+        when (val check = DatasetVerifier.verify(assets, parsed.sha256, structural)) {
+            is DatasetCheck.Fail -> {
+                if (force) clearData(db)
+                return@withContext rejected(db, DatasetSource.UNVERIFIED, name, assetRows, check.reason)
+            }
+            is DatasetCheck.Pass -> {
+                insertCandles(db, parsed.candles, onProgress)
+                importNews(db, assets, onProgress)
+                return@withContext finish(
+                    db, DatasetSource.BUNDLED, name, assetRows, beforeStart, beforeEnd,
+                    meta = check.meta,
+                )
+            }
+        }
+    }
+
+    /** Common tail: record the range change and build the summary. */
+    private suspend fun finish(
+        db: TradeQuestDatabase,
+        source: DatasetSource,
+        assetName: String?,
+        assetRows: Long,
+        beforeStart: Long,
+        beforeEnd: Long,
+        meta: MetaFile? = null,
+    ): ImportResult {
         // Only the two data tables were rewritten. If the dataset's range moved, the season's
         // fixed offset no longer points at the same window, so flag every existing season to
         // be reset; trades, stats and snapshots are preserved until the user acts on it.
         var rangeChanged = false
-        if (force && beforeStart != 0L) {
+        if (beforeStart != 0L) {
             val afterStart = db.candleDao().minTs() ?: 0L
             val afterEnd = db.candleDao().maxTs() ?: 0L
             if (afterStart != beforeStart || afterEnd != beforeEnd) {
@@ -141,16 +157,70 @@ object DatasetImporter {
                 rangeChanged = true
             }
         }
-
-        summary(db, source, assetName, assetRows).copy(rangeChanged = rangeChanged)
+        return summary(db, source, assetName, assetRows, meta).copy(rangeChanged = rangeChanged)
     }
 
-    /** Count candle rows in the asset without importing them. */
-    private suspend fun countAssetRows(assets: AssetSource, name: String): Long = withContext(Dispatchers.IO) {
-        val raw = assets.open(name)
-        BufferedReader(InputStreamReader(gzipOrPlain(raw), Charsets.UTF_8)).useLines { lines ->
-            lines.count { parseCandle(it) != null }
-        }.toLong()
+    private suspend fun clearData(db: TradeQuestDatabase) {
+        db.candleDao().deleteAll()
+        db.newsDao().deleteAll()
+    }
+
+    private suspend fun rejected(
+        db: TradeQuestDatabase,
+        source: DatasetSource,
+        assetName: String?,
+        assetRows: Long,
+        reason: String,
+    ): ImportResult = ImportResult(
+        candleCount = db.candleDao().count(),
+        newsCount = db.newsDao().count(),
+        datasetStartMs = db.candleDao().minTs() ?: 0L,
+        datasetEndMs = db.candleDao().maxTs() ?: 0L,
+        source = source,
+        assetName = assetName,
+        assetRows = assetRows,
+        failureReason = reason,
+    )
+
+    /** Parsed asset rows plus the SHA-256 of their canonical CSV content. */
+    private class ParsedAsset(val candles: List<Candle1m>, val sha256: String)
+
+    /**
+     * Read the whole asset once: decompress if needed, hash the canonical CSV bytes, and
+     * parse the candle rows. The hash is over the same bytes the app reads on-device, which
+     * is what [DatasetVerifier] compares with the meta file.
+     */
+    private fun readAsset(
+        assets: AssetSource,
+        name: String,
+        onProgress: (ImportProgress) -> Unit,
+    ): ParsedAsset {
+        onProgress(ImportProgress(ImportProgress.Phase.CANDLES, 0, 0))
+        val bytes = gzipOrPlain(assets.open(name)).use { it.readBytes() }
+        val sha = sha256Hex(bytes)
+        val candles = ArrayList<Candle1m>(96_000)
+        bytes.toString(Charsets.UTF_8).lineSequence().forEach { line ->
+            parseCandle(line)?.let { candles.add(it) }
+        }
+        return ParsedAsset(candles, sha)
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private suspend fun insertCandles(
+        db: TradeQuestDatabase,
+        candles: List<Candle1m>,
+        onProgress: (ImportProgress) -> Unit,
+    ) {
+        var done = 0
+        candles.chunked(BATCH_SIZE).forEach { chunk ->
+            db.candleDao().insertAll(chunk)
+            done += chunk.size
+            onProgress(ImportProgress(ImportProgress.Phase.CANDLES, done, candles.size))
+        }
     }
 
     /** Write the deterministic fake series into Room when no usable asset is bundled. */
@@ -178,36 +248,6 @@ object DatasetImporter {
         onProgress(ImportProgress(ImportProgress.Phase.CANDLES, done, done))
     }
 
-    private suspend fun importCandles(
-        db: TradeQuestDatabase,
-        assets: AssetSource,
-        assetName: String,
-        onProgress: (ImportProgress) -> Unit,
-    ) {
-        val raw = assets.open(assetName)
-        val reader = BufferedReader(InputStreamReader(gzipOrPlain(raw), Charsets.UTF_8))
-        var batch = ArrayList<Candle1m>(BATCH_SIZE)
-        var done = 0
-        onProgress(ImportProgress(ImportProgress.Phase.CANDLES, 0, 0))
-        reader.useLines { lines ->
-            for (line in lines) {
-                val row = parseCandle(line) ?: continue
-                batch.add(row)
-                if (batch.size >= BATCH_SIZE) {
-                    db.candleDao().insertAll(batch)
-                    done += batch.size
-                    batch = ArrayList(BATCH_SIZE)
-                    onProgress(ImportProgress(ImportProgress.Phase.CANDLES, done, 0))
-                }
-            }
-        }
-        if (batch.isNotEmpty()) {
-            db.candleDao().insertAll(batch)
-            done += batch.size
-        }
-        onProgress(ImportProgress(ImportProgress.Phase.CANDLES, done, done))
-    }
-
     private suspend fun importNews(
         db: TradeQuestDatabase,
         assets: AssetSource,
@@ -230,6 +270,7 @@ object DatasetImporter {
         source: DatasetSource,
         assetName: String? = null,
         assetRows: Long = 0L,
+        meta: MetaFile? = null,
     ): ImportResult {
         val start = db.candleDao().minTs() ?: 0L
         val end = db.candleDao().maxTs() ?: 0L
@@ -241,6 +282,7 @@ object DatasetImporter {
             source = source,
             assetName = assetName,
             assetRows = assetRows,
+            meta = meta,
         )
     }
 

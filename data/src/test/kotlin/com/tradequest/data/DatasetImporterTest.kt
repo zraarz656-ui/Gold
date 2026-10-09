@@ -3,6 +3,8 @@ package com.tradequest.data
 import com.tradequest.engine.Impact
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -13,19 +15,67 @@ import java.io.File
 class DatasetImporterTest {
 
     private val assetsDir = File("src/test/resources/assets")
+    private val plausibleDir = File("src/test/resources/plausible_assets")
+    private val plausibleGzDir = File("src/test/resources/plausible_assets_gz")
 
     @Test
     fun importInsertsEveryValidRow() = runTest {
         val db = TestDb.open()
-        val result = DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        val result = DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
 
-        // 4 valid candle rows; the "not,a,valid,row" line is skipped.
-        assertEquals(4L, result.candleCount)
+        // 10 valid candle rows / 3 news rows, all with a matching meta file.
+        assertEquals(10L, result.candleCount)
         assertEquals(3L, result.newsCount)
         assertEquals(DatasetSource.BUNDLED, result.source)
-        assertEquals(4, db.candleDao().count())
+        assertEquals(10, db.candleDao().count())
         assertEquals(3, db.newsDao().count())
         assertEquals(Impact.HIGH, db.newsDao().all().first().impact)
+        assertNotNull(result.meta)
+        assertEquals("test fixture", result.meta!!.source)
+        db.close()
+    }
+
+    @Test
+    fun importsGzippedAssetWithMatchingMeta() = runTest {
+        val db = TestDb.open()
+        val result = DatasetImporter.import(db, FileAssetSource(plausibleGzDir), force = true, minRows = 1)
+        assertEquals(DatasetSource.BUNDLED, result.source)
+        assertEquals(10L, result.candleCount)
+        db.close()
+    }
+
+    @Test
+    fun rejectsAssetWhoseMetaIsMissing() = runTest {
+        val db = TestDb.open()
+        val result = DatasetImporter.import(
+            db, FileAssetSource(File("src/test/resources/nometa_assets")), force = true, minRows = 1,
+        )
+        assertEquals(DatasetSource.UNVERIFIED, result.source)
+        assertTrue(result.failureReason!!.contains("metadata is missing"))
+        assertEquals(0, db.candleDao().count())
+        db.close()
+    }
+
+    @Test
+    fun rejectsAssetWhoseChecksumDoesNotMatch() = runTest {
+        val db = TestDb.open()
+        val result = DatasetImporter.import(
+            db, FileAssetSource(File("src/test/resources/tampered_assets")), force = true, minRows = 1,
+        )
+        assertEquals(DatasetSource.UNVERIFIED, result.source)
+        assertTrue(result.failureReason!!.contains("checksum mismatch"))
+        assertEquals(0, db.candleDao().count())
+        db.close()
+    }
+
+    @Test
+    fun rejectsImplausibleAssetEvenWhenLargeEnough() = runTest {
+        val db = TestDb.open()
+        // The tiny fixture is only 4 flat rows, but minRows=1 lets it reach the plausibility
+        // gate; with no meta file it is rejected before the structure check would run.
+        val result = DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        assertEquals(DatasetSource.UNVERIFIED, result.source)
+        assertEquals(0, db.candleDao().count())
         db.close()
     }
 
@@ -56,9 +106,9 @@ class DatasetImporterTest {
     @Test
     fun importIsIdempotentUnlessForced() = runTest {
         val db = TestDb.open()
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = false, minRows = 1)
-        assertEquals(4, db.candleDao().count())
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = false, minRows = 1)
+        assertEquals(10, db.candleDao().count())
         assertEquals(3, db.newsDao().count())
         db.close()
     }
@@ -66,9 +116,9 @@ class DatasetImporterTest {
     @Test
     fun forceImportReplacesExistingRows() = runTest {
         val db = TestDb.open()
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
-        assertEquals(4, db.candleDao().count())
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
+        assertEquals(10, db.candleDao().count())
         db.close()
     }
 
@@ -76,7 +126,7 @@ class DatasetImporterTest {
     fun batchProgressIsReported() = runTest {
         val db = TestDb.open()
         val phases = mutableSetOf<ImportProgress.Phase>()
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1) {
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1) {
             phases.add(it.phase)
         }
         assertEquals(setOf(ImportProgress.Phase.CANDLES, ImportProgress.Phase.NEWS), phases)
@@ -91,12 +141,31 @@ class DatasetImporterTest {
     @Test
     fun importsPlainCsvWhenAssetWasGunzippedByTheBuild() = runTest {
         val db = TestDb.open()
-        val plain = FileAssetSource(File("src/test/resources/plain_assets"))
-        val result = DatasetImporter.import(db, plain, force = true, minRows = 1)
+        val result = DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
 
-        assertEquals(4L, result.candleCount)
+        assertEquals(10L, result.candleCount)
         assertEquals(3L, result.newsCount)
-        assertEquals(4, db.candleDao().count())
+        assertEquals(10, db.candleDao().count())
+        db.close()
+    }
+
+    @Test
+    fun metaRowCountMismatchIsRejected() = runTest {
+        val db = TestDb.open()
+        // The plausible meta declares 10 rows; a file with one row removed (and a stale sha)
+        // must fail on structure/rowCount rather than import a truncated series.
+        val tmp = File.createTempFile("assets", "").apply { delete(); mkdirs() }
+        File(plausibleDir, "xauusd_m1.csv").copyTo(File(tmp, "xauusd_m1.csv"), overwrite = true)
+        File(plausibleDir, "news.json").copyTo(File(tmp, "news.json"), overwrite = true)
+        File(plausibleDir, "xauusd_m1.meta.json").copyTo(File(tmp, "xauusd_m1.meta.json"), overwrite = true)
+        val csv = File(tmp, "xauusd_m1.csv")
+        csv.writeText(csv.readLines().dropLast(2).joinToString("\n") + "\n")
+
+        val result = DatasetImporter.import(db, FileAssetSource(tmp), force = true, minRows = 1)
+        assertEquals(DatasetSource.UNVERIFIED, result.source)
+        /* checksum is stale after the edit, so checksum (not rowCount) fails first */
+        assertTrue(result.failureReason!!.contains("checksum mismatch"))
+        assertEquals(0, db.candleDao().count())
         db.close()
     }
 

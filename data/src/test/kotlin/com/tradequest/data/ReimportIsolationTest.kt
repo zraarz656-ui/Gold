@@ -20,7 +20,7 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 class ReimportIsolationTest {
 
-    private val assetsDir = File("src/test/resources/assets")
+    private val plausibleDir = File("src/test/resources/plausible_assets")
     private val min = 60_000L
     private val base = 1_700_000_000_000L // mid-week Tuesday
 
@@ -91,10 +91,10 @@ class ReimportIsolationTest {
         val equityBefore = db.equitySnapshotDao().bySeason(seasonBefore.id)
         val checkpointBefore = db.settingsDao().get(AccountCheckpoint.KEY)
 
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
 
         // Data tables were replaced by the asset's 4 candles / 3 news rows.
-        assertEquals(4L, db.candleDao().count())
+        assertEquals(10L, db.candleDao().count())
         assertEquals(3L, db.newsDao().count())
 
         // Every user-owned table is untouched. The season row survives too; only its
@@ -119,8 +119,8 @@ class ReimportIsolationTest {
         val db = TestDb.open()
         val season = TestDb.seedSeason(db, base)
         // Import once, then force re-import the same asset: the range is identical.
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
-        val result = DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
+        val result = DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
 
         assertFalse(result.rangeChanged)
         assertFalse(db.seasonDao().byId(season.id)!!.needsReset)
@@ -134,7 +134,7 @@ class ReimportIsolationTest {
         db.candleDao().insertAll(TestDb.candles(count = 7, startTs = base)) // a different range
         db.seasonDao().clearNeedsReset(season.id)
 
-        val result = DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        val result = DatasetImporter.import(db, FileAssetSource(plausibleDir), force = true, minRows = 1)
 
         assertTrue(result.rangeChanged)
         assertTrue(db.seasonDao().byId(season.id)!!.needsReset)

@@ -21,4 +21,8 @@ data class ImportResult(
     val assetRows: Long = 0L,
     /** True when a forced re-import moved the dataset range and flagged the season. */
     val rangeChanged: Boolean = false,
+    /** Provenance of the bundled asset, present only when it passed verification. */
+    val meta: MetaFile? = null,
+    /** Why the asset was rejected (missing/undersized/checksum/structure); null on success. */
+    val failureReason: String? = null,
 )

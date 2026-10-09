@@ -6,7 +6,10 @@ enum class DatasetSource(val label: String) {
     FAKE("fake generator"),
 
     /** Nothing imported and no usable asset — the app shows a data error screen. */
-    MISSING("missing asset");
+    MISSING("missing asset"),
+
+    /** An asset was present but failed verification (meta/sha/rowCount/plausibility). */
+    UNVERIFIED("unverified asset");
 
     companion object {
         fun fromId(id: String?): DatasetSource? = entries.firstOrNull { it.name == id }
