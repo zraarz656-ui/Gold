@@ -101,7 +101,8 @@ fun ChartPanel(
     crosshair: CrosshairInfo? = null,
     onCrosshairChange: (CrosshairInfo?) -> Unit = {},
     onNewsTap: (NewsEvent) -> Unit = {},
-    onLineDrag: (Long, OrderLineKind, Double) -> Unit = { _, _, _ -> },
+    onLevelOutcome: (LevelOutcome) -> Unit = {},
+    onMessage: (String) -> Unit = {},
     debug: GestureDebug? = null,
     liveRunning: Boolean = false,
     showFps: Boolean = false,
@@ -110,6 +111,7 @@ fun ChartPanel(
     val state = controller.state
     var debugExpanded by remember { mutableStateOf(true) }
     var newsPopup by remember { mutableStateOf<NewsEvent?>(null) }
+    var confirm by remember { mutableStateOf<LevelConfirm?>(null) }
 
     Box(modifier, contentAlignment = Alignment.TopStart) {
         CandleChart(
@@ -120,8 +122,25 @@ fun ChartPanel(
             crosshair = crosshair,
             onCrosshairChange = onCrosshairChange,
             onNewsTap = { newsPopup = it; onNewsTap(it) },
-            onLineDrag = onLineDrag,
+            onLevelOutcome = { outcome ->
+                when (outcome) {
+                    // A new/moved level waits for the user to confirm; the preview line stays.
+                    is LevelOutcome.Set -> confirm = LevelConfirm(outcome) { ok ->
+                        confirm = null
+                        controller.cancelLevelDrag()
+                        if (ok) onLevelOutcome(outcome)
+                    }
+                    is LevelOutcome.Rejected -> { controller.cancelLevelDrag(); onMessage(outcome.message) }
+                    else -> { controller.cancelLevelDrag(); onLevelOutcome(outcome) }
+                }
+            },
         )
+        confirm?.let { c ->
+            LevelConfirmChip(
+                c = c,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp),
+            )
+        }
         val ch = crosshair
         if (ch != null) {
             CrosshairReadout(controller, ch, Modifier.align(Alignment.TopEnd).padding(top = 62.dp))
@@ -262,6 +281,39 @@ fun Pill(label: String, state: ChartState, selected: Boolean = false, onClick: (
             color = if (selected) state.theme.background else state.theme.axisText,
             fontSize = 12.sp,
         )
+    }
+}
+
+/** The pending confirm chip shown after a level drag / new handle release. */
+private data class LevelConfirm(val outcome: LevelOutcome.Set, val onResult: (Boolean) -> Unit)
+
+/**
+ * "Set SL at 2378.50 — OK / Cancel". While it is up the dragged line stays at its preview
+ * price; OK commits through the repository, Cancel (or timeout) snaps the line back.
+ */
+@Composable
+private fun LevelConfirmChip(c: LevelConfirm, modifier: Modifier = Modifier) {
+    val theme = ChartTheme.DARK
+    val kind = when (c.outcome.kind) {
+        OrderLineKind.SL -> "SL"
+        OrderLineKind.TP -> "TP"
+        else -> "Level"
+    }
+    Row(
+        modifier
+            .padding(6.dp)
+            .background(Color(0xF21A1F27), RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            "Set $kind at ${formatPrice(c.outcome.price)}",
+            color = Color.White,
+            fontSize = 13.sp,
+        )
+        TextButton(onClick = { c.onResult(true) }) { Text("OK", color = Color(0xFF26A69A), fontSize = 13.sp) }
+        TextButton(onClick = { c.onResult(false) }) { Text("Cancel", color = theme.axisText, fontSize = 13.sp) }
     }
 }
 

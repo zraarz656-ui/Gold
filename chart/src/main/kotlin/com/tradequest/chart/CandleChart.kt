@@ -38,10 +38,10 @@ import kotlin.math.abs
  *  - long press: crosshair readout that tracks the finger
  *  - double tap on the gutter: auto-fit the price range
  *  - tap next to the time axis: open the nearest news; tap on the plot: clear the crosshair
- *  - drag an order line (Phase 3): edit that order
+ *  - drag an order line's tag/body or a "+SL"/"+TP" handle (Phase 3): edit that level
  *
- * [onLineDrag] is the only Phase 3 addition; everything else mirrors the recovered
- * Phase 2 behaviour.
+ * The Phase 3 additions are [onLevelOutcome] and the DRAG_LEVEL branch; every other
+ * gesture mirrors the recovered Phase 2 behaviour exactly.
  */
 @Composable
 fun CandleChart(
@@ -52,7 +52,7 @@ fun CandleChart(
     crosshair: CrosshairInfo? = null,
     onCrosshairChange: (CrosshairInfo?) -> Unit = {},
     onNewsTap: (NewsEvent) -> Unit = {},
-    onLineDrag: (Long, OrderLineKind, Double) -> Unit = { _, _, _ -> },
+    onLevelOutcome: (LevelOutcome) -> Unit = {},
 ) {
     val density = LocalDensity.current.density
     val axisWidthPx = with(LocalDensity.current) { 60.dp.toPx() }
@@ -69,7 +69,7 @@ fun CandleChart(
     val currentDebug by rememberUpdatedState(debug)
     val currentOnCrosshair by rememberUpdatedState(onCrosshairChange)
     val currentOnNewsTap by rememberUpdatedState(onNewsTap)
-    val currentOnLineDrag by rememberUpdatedState(onLineDrag)
+    val currentOnLevelOutcome by rememberUpdatedState(onLevelOutcome)
 
     LaunchedEffect(displayOffsetMs) { controller.setDisplayOffset(displayOffsetMs) }
 
@@ -116,12 +116,16 @@ fun CandleChart(
                     var scaleStarted = false
                     var scaleStartMin = 0.0
                     var scaleStartMax = 0.0
-                    var dragLine: ChartOrderLine? = null
+                    // Tags and handles are draggable even inside the price gutter, so the hit
+                    // test runs everywhere; a miss simply falls through to pan/scale as before.
+                    val levelHit: LevelHit? = LevelHitTest.hit(
+                        controller.state.overlay,
+                        geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx),
+                        down.position.x, down.position.y, density,
+                    )
+                    var levelDragging = false
                     val panSamples = ArrayList<Pair<Long, Float>>(16)
                     panSamples.add(down.uptimeMillis to down.position.x)
-                    if (!onAxis) {
-                        dragLine = nearestLine(controller.state, geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx), down.position.y)
-                    }
 
                     while (true) {
                         val event = awaitPointerEvent()
@@ -133,6 +137,32 @@ fun CandleChart(
                         if (change == null || !change.pressed) break
                         val geo = geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx)
                         moved = maxOf(moved, (change.position - down.position).getDistance())
+
+                        // A level drag (Phase 3) outranks pan/crosshair: once the finger is on a
+                        // line it is consumed for the rest of the gesture. A "+" handle shows its
+                        // pinned preview at once; an existing line starts moving only past slop.
+                        val hit = levelHit
+                        if (hit != null && contacts == 1) {
+                            currentDebug?.mode = "DRAG_LEVEL"
+                            change.consume()
+                            if (hit is LevelHit.CloseBox || hit is LevelHit.EntryTag) {
+                                // These only act on release; no preview while holding them.
+                                lastX = change.position.x
+                                lastY = change.position.y
+                                continue
+                            }
+                            if (!levelDragging && (hit is LevelHit.Handle || moved > slop)) {
+                                levelDragging = true
+                                controller.beginLevelDrag(hit)
+                            }
+                            if (levelDragging) {
+                                val price = ChartMath.yToPrice(change.position.y, geo.priceRange, geo.plot)
+                                controller.updateLevelDrag(price, change.position.x, change.position.y)
+                            }
+                            lastX = change.position.x
+                            lastY = change.position.y
+                            continue
+                        }
 
                         // Long press -> crosshair that tracks the finger.
                         if (!lpFired && contacts == 1 && !onAxis && moved <= slop &&
@@ -183,11 +213,6 @@ fun CandleChart(
                             controller.scalePriceRange(factor)
                             currentDebug?.lastZoom = factor.toFloat()
                             event.changes.forEach { it.consume() }
-                        } else if (dragLine != null) {
-                            currentDebug?.mode = "LINE"
-                            val line = dragLine!!
-                            currentOnLineDrag(line.id, line.kind, ChartMath.yToPrice(change.position.y, geo.priceRange, geo.plot))
-                            event.changes.forEach { it.consume() }
                         } else if (controller.state.viewport.manualPriceScale &&
                             abs(change.position.y - lastY) > 0f &&
                             abs(change.position.y - lastY) > abs(change.position.x - lastX)
@@ -210,7 +235,28 @@ fun CandleChart(
                         lastY = change.position.y
                     }
 
-                    if (!panning && !pinching && !lpFired && dragLine == null && moved <= slop) {
+                    if (levelHit != null && levelDragging) {
+                        val geo = geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx)
+                        if (levelHit is LevelHit.CloseBox) {
+                            controller.cancelLevelDrag()
+                            currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, levelHit.kind))
+                        } else {
+                            val price = ChartMath.yToPrice(lastY, geo.priceRange, geo.plot)
+                            val outcome = controller.endLevelDrag(price, controller.state.overlay.bid, controller.state.overlay.spread)
+                            currentOnLevelOutcome(outcome)
+                        }
+                    } else if (levelHit is LevelHit.CloseBox && moved <= slop) {
+                        // A tap on the "x": clear that level.
+                        currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, levelHit.kind))
+                    } else if (levelHit is LevelHit.EntryTag && moved <= slop) {
+                        // A tap on the entry: strip both levels from the position.
+                        currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.SL))
+                        currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.TP))
+                    } else if (levelHit != null) {
+                        controller.cancelLevelDrag()
+                    }
+
+                    if (!panning && !pinching && !lpFired && !levelDragging && levelHit == null && moved <= slop) {
                         val now = down.uptimeMillis
                         val isDouble = (now - lastTapUpMs) <= doubleTapMs &&
                             (down.position - lastTapPos).getDistance() <= 2f * slop
@@ -252,15 +298,6 @@ fun CandleChart(
         if (controller.state.marketClosed) drawMarketClosedBanner(controller.state, geo, textMeasurer)
     }
 }
-
-/** The closest draggable line to [y], within a finger-sized band. */
-private fun nearestLine(state: ChartState, geo: ChartGeometry, y: Float): ChartOrderLine? =
-    state.orderLines
-        .filter { it.draggable }
-        .minByOrNull { abs(ChartMath.priceToY(it.price, geo.priceRange, geo.plot) - y) }
-        ?.takeIf { abs(ChartMath.priceToY(it.price, geo.priceRange, geo.plot) - y) < LINE_HIT_PX }
-
-private const val LINE_HIT_PX = 28f
 
 private fun emitCrosshair(
     controller: ChartController,

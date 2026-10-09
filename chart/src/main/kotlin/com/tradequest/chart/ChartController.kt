@@ -228,7 +228,109 @@ class ChartController(
     }
 
     fun setOverlays(lines: List<ChartOrderLine>, markers: List<ChartMarker>) {
-        state = state.copy(orderLines = lines, markers = markers)
+        setOverlay(state.overlay.copy(lines = lines, markers = markers))
+    }
+
+    /**
+     * Replace the overlay, preserving the live drag in flight. The app layer rebuilds the
+     * lines from Room on every order change; without this the drag preview's line would be
+     * stale. The freshly committed geometry is adopted and the preview re-clamped to it.
+     */
+    fun setOverlay(overlay: ChartOverlayState) {
+        val preview = state.dragPreview
+        if (preview == null) {
+            state = state.copy(overlay = overlay)
+            return
+        }
+        val fresh = overlay.lines.firstOrNull { it.id == preview.line.id && it.kind == preview.line.kind }
+        val updated = if (fresh != null) {
+            preview.copy(line = preview.line.copy(
+                side = fresh.side, lots = fresh.lots, entryPrice = fresh.entryPrice, handles = emptyList(),
+            ))
+        } else {
+            preview
+        }
+        state = state.copy(overlay = overlay, dragPreview = updated)
+    }
+
+    // ------------------------------------------------------------- level dragging
+
+    private var dragSession: LevelDragSession? = null
+
+    /** The level gesture currently in flight, or null. */
+    val activeDrag: LevelDragSession? get() = dragSession
+
+    /**
+     * Begin dragging [hit]. A "+SL"/"+TP" handle starts pinned to the entry (the line is
+     * drawn at the finger only once it moves); an existing line keeps its committed price
+     * until the finger moves too.
+     */
+    fun beginLevelDrag(hit: LevelHit) {
+        val line = state.overlay.lines.firstOrNull { it.id == hit.hitId() } ?: return
+        val kind = hit.hitKind()
+        val detached = hit is LevelHit.Handle
+        val startPrice = if (detached) line.entryPrice else line.price
+        dragSession = LevelDragSession(
+            id = line.id,
+            kind = kind,
+            side = line.side,
+            lots = line.lots,
+            entryPrice = line.entryPrice,
+            detached = detached,
+            currentPrice = LevelRules.snap(startPrice),
+        )
+        state = state.copy(dragPreview = DragPreview(previewLine(line, kind), startPrice, Float.NaN, Float.NaN))
+    }
+
+    /** Move the active drag to the finger's price, updating the preview line and bubble. */
+    fun updateLevelDrag(rawPrice: Double, fingerX: Float, fingerY: Float) {
+        val s = dragSession ?: return
+        val price = LevelRules.snap(rawPrice)
+        val base = state.dragPreview?.line
+            ?: state.overlay.lines.firstOrNull { it.id == s.id && it.kind == s.kind }
+            ?: return
+        s.currentPrice = price
+        state = state.copy(dragPreview = DragPreview(base, price, fingerX, fingerY))
+    }
+
+    /**
+     * Finish the drag at the finger's price. Does **not** persist and keeps the preview so
+     * the line stays at the proposed price while the confirm chip is up; the caller either
+     * commits (then [cancelLevelDrag]) or [cancelLevelDrag]s it on Cancel.
+     */
+    fun endLevelDrag(rawPrice: Double, market: Double, spread: Double): LevelOutcome {
+        val s = dragSession ?: return LevelOutcome.Cancelled
+        val edit = if (s.detached) LevelEdit.New(s.context(), rawPrice) else LevelEdit.Existing(s.context(), rawPrice)
+        return LevelRules.resolve(edit, market, spread)
+    }
+
+    fun cancelLevelDrag() = clearDragState()
+
+    private fun clearDragState() {
+        dragSession = null
+        state = state.copy(dragPreview = null)
+    }
+
+    /** The preview line for a detached handle: no close box, but the entry's other handles stay. */
+    private fun previewLine(line: ChartOrderLine, kind: OrderLineKind): ChartOrderLine =
+        ChartOrderLine(id = line.id, kind = kind, price = line.entryPrice, draggable = false,
+            side = line.side, lots = line.lots, entryPrice = line.entryPrice, handles = emptyList())
+
+    /** The level context of the drag in flight, for tag/PnL rendering. */
+    fun dragContext(): LevelContext? = dragSession?.context()
+
+    private fun LevelHit.hitId(): Long = when (this) {
+        is LevelHit.CloseBox -> lineId
+        is LevelHit.Line -> lineId
+        is LevelHit.Handle -> lineId
+        is LevelHit.EntryTag -> lineId
+    }
+
+    private fun LevelHit.hitKind(): OrderLineKind = when (this) {
+        is LevelHit.CloseBox -> kind
+        is LevelHit.Line -> kind
+        is LevelHit.Handle -> kind
+        is LevelHit.EntryTag -> OrderLineKind.ENTRY
     }
 
     fun setMarketClosed(closed: Boolean) {

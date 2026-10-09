@@ -95,8 +95,17 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
 - Catch-up runs on the minute tick as well as on open/resume (`TradingViewModel.observeTicker`).
   The tick is what makes a market order fill when the next candle closes; without it fills
   would only happen on reopen. Running catch-up rewrites the order tables, so every trade
-  mutation (`placeOrder`, `cancelOrder`, `closePosition`, `editStops`, `dragLine`,
+  mutation (`placeOrder`, `cancelOrder`, `closePosition`, `editStops`, `applyLevelOutcome`,
   `debugTimeTravel`) takes the same `catchUpMutex` to avoid a lost-write race.
+- Chart order levels (Phase 3) are pure data: `ChartOverlays.kt` defines `ChartOrderLine`
+  (`handles` lists the missing "+SL"/"+TP" affordances), `ChartOverlayState` (lines, markers,
+  `bid`, `spread`) and `DragPreview`. `LevelEdit.kt`/`LevelRules` snap to 0.01, validate
+  side/entry/market and emit a `LevelOutcome`; `LevelHitTest` resolves a touch (close box >
+  handle > line/tag) from the same `LevelGeometry` constants the renderer draws with. The
+  gesture loop is the **only** place a level drag begins; `ChartController.beginLevelDrag` /
+  `updateLevelDrag` / `endLevelDrag` own the preview, which survives `setOverlay` rebuilds so
+  an in-flight drag is never clobbered. `TradeQuestScreen` confirms every `Set` via the chip
+  before `TradingViewModel.applyLevelOutcome` persists it through `TradingRepository`.
 - Every closed trade carries `closedAt` = the timestamp of the candle whose processing
   closed it (`ClosedPosition.closeTs`): SL/TP/stop-out use the candle that triggered them,
   a manual close uses the season's last visible candle. `closedAt` is never wall-clock and

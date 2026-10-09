@@ -37,9 +37,22 @@ data class ChartState(
     val drawMode: Boolean = false,
     val clockMs: Long? = null,
     val liveEdgeFollowing: Boolean = true,
-    val orderLines: List<ChartOrderLine> = emptyList(),
-    val markers: List<ChartMarker> = emptyList(),
+    val overlay: ChartOverlayState = ChartOverlayState(),
     val marketClosed: Boolean = false,
+    /** The line being dragged, drawn at the finger's price instead of its committed price. */
+    val dragPreview: DragPreview? = null,
 ) {
+    /** Lines to draw: the overlay's lines plus the live drag preview. */
+    val orderLines: List<ChartOrderLine> get() = overlay.lines
+    val markers: List<ChartMarker> get() = overlay.markers
+
     val barCount: Int get() = bars.size
 }
+
+/** The level currently under the finger, drawn in place of its committed line. */
+data class DragPreview(
+    val line: ChartOrderLine,
+    val price: Double,
+    val x: Float,
+    val y: Float,
+)

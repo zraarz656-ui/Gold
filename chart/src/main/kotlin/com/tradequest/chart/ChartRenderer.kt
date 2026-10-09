@@ -93,7 +93,82 @@ fun DrawScope.drawChart(
             val cy = crosshair.y.coerceIn(plot.top, plot.bottom)
             drawPriceLabel(textMeasurer, theme, geo, ChartMath.yToPrice(cy, geo.priceRange, plot), cy, theme.crosshair)
         }
+        drawLevelOverlays(state, geo, textMeasurer)
     }
+
+    // The magnified price bubble follows the finger, so it is drawn last and unclipped.
+    state.dragPreview?.let { drawDragPreview(state, geo, textMeasurer, it) }
+}
+
+/**
+ * SL/TP/pending tags and "+SL"/"+TP" handles. Drawn in the right gutter, clipped there so
+ * a tag can never cover the plot. Each draggable tag carries an "x" close box.
+ */
+private fun DrawScope.drawLevelOverlays(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
+    val plot = geo.plot
+    val preview = state.dragPreview
+    val tags = ArrayList<Pair<ChartOrderLine, Double>>()
+    for (line in state.orderLines) {
+        if (preview != null && preview.line.id == line.id && preview.line.kind == line.kind) continue
+        tags.add(line to line.drawPrice)
+    }
+    preview?.let { tags.add(it.line to it.price) }
+
+    for ((line, price) in tags) {
+        val yRaw = ChartMath.priceToY(price, geo.priceRange, plot)
+        if (yRaw < plot.top - 12f || yRaw > plot.bottom + 12f) continue
+        val y = yRaw.coerceIn(plot.top + 9f, plot.bottom - 9f)
+        val color = line.color()
+        val text = line.tagText(price)
+        val boxLeft = plot.right + 1f
+        val width = LevelGeometry.TAG_WIDTH
+        drawRect(color, Offset(boxLeft, y - 9f), Size(width, 18f))
+        drawText(textMeasurer, text, Offset(boxLeft + 4f, y - 7f), TextStyle(Color.White, 10.sp))
+        if (line.needsCloseBox()) {
+            // "x" box at the tag's right edge; its hit box mirrors the render exactly.
+            val closeLeft = boxLeft + width - LevelGeometry.CLOSE_BOX
+            drawRect(Color(0x66000000), Offset(closeLeft, y - 9f), Size(LevelGeometry.CLOSE_BOX, 18f))
+            drawLine(Color.White, Offset(closeLeft + 7f, y - 4f), Offset(closeLeft + 13f, y + 4f), 1.5f)
+            drawLine(Color.White, Offset(closeLeft + 13f, y - 4f), Offset(closeLeft + 7f, y + 4f), 1.5f)
+        }
+    }
+
+    // "+SL"/"+TP" handles for an entry that has no such level yet, laid side by side.
+    for (line in state.orderLines) {
+        val handles = LevelHitTest.handlesOf(line)
+        if (handles.isEmpty()) continue
+        val yRaw = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
+        if (yRaw < plot.top - 12f || yRaw > plot.bottom + 12f) continue
+        val y = yRaw.coerceIn(plot.top + 9f, plot.bottom - 9f)
+        val start = plot.right - handles.size * LevelGeometry.HANDLE_WIDTH
+        handles.forEachIndexed { i, kind ->
+            val label = if (kind == OrderLineKind.SL) "+SL" else "+TP"
+            val color = if (kind == OrderLineKind.SL) Color(0xFFEF5350) else Color(0xFF26A69A)
+            val left = start + i * LevelGeometry.HANDLE_WIDTH
+            drawRect(Color(0xCC1A1F27), Offset(left, y - 9f), Size(LevelGeometry.HANDLE_WIDTH, LevelGeometry.HANDLE_HEIGHT))
+            drawRect(color, Offset(left, y - 9f), Size(2f, LevelGeometry.HANDLE_HEIGHT))
+            drawText(textMeasurer, label, Offset(left + 6f, y - 7f), TextStyle(color, 10.sp))
+        }
+    }
+}
+
+/** The magnified price bubble shown above the finger while a level is dragged. */
+private fun DrawScope.drawDragPreview(
+    state: ChartState,
+    geo: ChartGeometry,
+    textMeasurer: TextMeasurer,
+    preview: DragPreview,
+) {
+    val text = formatPrice(preview.price)
+    val w = 74f
+    val h = 24f
+    val fx = if (preview.x.isNaN()) 0f else preview.x
+    val fy = if (preview.y.isNaN()) 0f else preview.y
+    val x = (fx - w / 2f).coerceIn(0f, maxOf(size.width - w, 0f))
+    val y = (fy - h - 16f).coerceIn(0f, maxOf(size.height - h, 0f))
+    drawRect(Color(0xE61A1F27), Offset(x, y), Size(w, h))
+    drawRect(state.theme.crosshair, Offset(x, y), Size(w, h), style = Stroke(1.5f))
+    drawText(textMeasurer, text, Offset(x + 7f, y + 5f), TextStyle(Color.White, 13.sp))
 }
 
 /** Shade the weekend gaps (a candle gap wider than two bars means the market was shut). */
@@ -152,34 +227,51 @@ private fun DrawScope.drawDrawingsHook(state: ChartState, geo: ChartGeometry) {}
 
 /** Draw the order/SL/TP lines and entry/exit markers supplied by the trading layer. */
 private fun DrawScope.drawOrderLinesHook(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
-    if (state.orderLines.isEmpty() && state.markers.isEmpty()) return
+    if (state.orderLines.isEmpty() && state.markers.isEmpty() && state.dragPreview == null) return
+    val preview = state.dragPreview
     for (line in state.orderLines) {
-        val y = ChartMath.priceToY(line.price, geo.priceRange, geo.plot)
-        if (y < geo.plot.top - 2f || y > geo.plot.bottom + 2f) continue
+        if (preview != null && preview.line.id == line.id && preview.line.kind == line.kind) continue
+        val y = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
+        if (y < geo.plot.top - 12f || y > geo.plot.bottom + 12f) continue
         val color = line.color()
-        drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y))
-        val label = if (line.pnlText != null) line.label + "  " + line.pnlText else line.label
-        drawTag(textMeasurer, geo, label, y, color)
+        if (line.kind == OrderLineKind.ENTRY) {
+            drawLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), 1.5f)
+        } else {
+            drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y))
+        }
     }
-    for (m in state.markers) {
-        val x = ChartMath.indexToX(m.barIndex.toFloat(), state.viewport)
-        if (x < geo.plot.left - 8f || x > geo.plot.right + 8f) continue
-        val y = ChartMath.priceToY(m.price, geo.priceRange, geo.plot)
-        drawMarker(x, y, m.entry, m.long)
+    preview?.let {
+        val y = ChartMath.priceToY(it.price, geo.priceRange, geo.plot)
+        drawDashedLine(it.line.color(), Offset(geo.plot.left, y), Offset(geo.plot.right, y))
+    }
+    if (preview == null) {
+        for (m in state.markers) {
+            val x = ChartMath.indexToX(m.barIndex.toFloat(), state.viewport)
+            if (x < geo.plot.left - 8f || x > geo.plot.right + 8f) continue
+            val y = ChartMath.priceToY(m.price, geo.priceRange, geo.plot)
+            drawMarker(x, y, m.entry, m.long)
+        }
     }
 }
+
+/** Tag text for a line, rebuilt from the drawn price so it updates while dragging. */
+private fun ChartOrderLine.tagText(price: Double = drawPrice): String {
+    val ctx = levelContext()
+    return when (kind) {
+        OrderLineKind.SL, OrderLineKind.TP -> LevelRules.levelTag(kind, ctx, price)
+        OrderLineKind.PENDING -> label
+        OrderLineKind.ENTRY -> pnlText?.let { "$label $it" } ?: label
+    }
+}
+
+private fun ChartOrderLine.needsCloseBox(): Boolean =
+    draggable && (kind == OrderLineKind.SL || kind == OrderLineKind.TP)
 
 private fun ChartOrderLine.color(): Color = when (kind) {
     OrderLineKind.ENTRY -> Color(0xFF42A5F5)
     OrderLineKind.SL -> Color(0xFFEF5350)
     OrderLineKind.TP -> Color(0xFF26A69A)
     OrderLineKind.PENDING -> Color(0xFFFFB300)
-}
-
-private fun DrawScope.drawTag(textMeasurer: TextMeasurer, geo: ChartGeometry, text: String, y: Float, color: Color) {
-    val yc = y.coerceIn(geo.plot.top + 7f, geo.plot.bottom - 7f)
-    drawRect(color, Offset(geo.plot.left + 1f, yc - 7f), Size(120f, 14f))
-    drawText(textMeasurer, text, Offset(geo.plot.left + 4f, yc - 6f), TextStyle(Color.White, 10.sp))
 }
 
 /** A small triangle at an entry/exit point. */

@@ -16,9 +16,11 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +38,7 @@ import com.tradequest.chart.TIMEFRAMES
 import com.tradequest.chart.label
 import com.tradequest.data.OrderStatus
 import com.tradequest.engine.OrderType
+import kotlinx.coroutines.launch
 
 /** Root screen: chart + equity strip + order entry + positions. */
 @Composable
@@ -59,7 +62,9 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     var sheetFor by remember { mutableStateOf<OrderType?>(null) }
     var sheetSide by remember { mutableStateOf(com.tradequest.engine.Side.LONG) }
     var crosshair by remember { mutableStateOf<CrosshairInfo?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
     var showResetConfirm by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val controller = viewModel.controller
     val c = tradeColors
 
@@ -83,8 +88,12 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                     modifier = Modifier.fillMaxSize(),
                     crosshair = crosshair,
                     onCrosshairChange = { crosshair = it },
-                    onLineDrag = { id, kind, price -> viewModel.dragLine(id, kind, price) },
+                    onLevelOutcome = { outcome -> scope.launch { viewModel.applyLevelOutcome(outcome) } },
+                    onMessage = { message = it },
                 )
+                message?.let { msg ->
+                    LevelMessageBanner(msg) { message = null }
+                }
                 if (marketClosed) {
                     MarketClosedBanner(Modifier.align(Alignment.Center).padding(8.dp))
                 }
@@ -208,5 +217,28 @@ private fun ThemePicker(current: ChartTheme, onPick: (ChartTheme) -> Unit) {
         ChartTheme.all.forEach { t ->
             Chip(t.name, t.id == current.id) { onPick(t) }
         }
+    }
+}
+
+/** Transient "SL must be below the entry" style feedback for a rejected level drag. */
+@Composable
+private fun LevelMessageBanner(message: String, onDismiss: () -> Unit) {
+    val c = tradeColors
+    LaunchedEffect(message) {
+        kotlinx.coroutines.delay(2600)
+        onDismiss()
+    }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Text(
+            message,
+            modifier = Modifier
+                .padding(bottom = 96.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(c.surfaceVariant)
+                .clickable { onDismiss() }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            color = c.warning,
+            fontSize = 12.sp,
+        )
     }
 }

@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.tradequest.chart.ChartController
 import com.tradequest.chart.ChartMarker
 import com.tradequest.chart.ChartOrderLine
+import com.tradequest.chart.ChartOverlayState
+import com.tradequest.chart.LevelOutcome
 import com.tradequest.chart.OrderLineKind
 import com.tradequest.data.AccountCheckpoint
 import com.tradequest.data.AssetSource
@@ -279,25 +281,49 @@ class TradingViewModel @Inject constructor(
     }
 
     private fun applyOverlays(orders: List<TradeOrder>) {
-        val bid = _quote.value.bid
+        val quote = _quote.value
+        val bid = quote.bid
         val lines = ArrayList<ChartOrderLine>()
         val markers = ArrayList<ChartMarker>()
         for (o in orders) {
             when (o.status) {
                 OrderStatus.OPEN -> {
                     val entry = o.entryPrice ?: continue
+                    val handles = buildList {
+                        if (o.sl == null) add(OrderLineKind.SL)
+                        if (o.tp == null) add(OrderLineKind.TP)
+                    }
                     lines.add(
-                        ChartOrderLine(o.id, OrderLineKind.ENTRY, entry, "Entry ${o.lots}L", pnlTag(o, bid), pnl(o, bid) >= 0, false),
+                        ChartOrderLine(
+                            id = o.id, kind = OrderLineKind.ENTRY, price = entry, label = "Entry ${o.lots}L",
+                            pnlText = pnlTag(o, bid), positive = pnl(o, bid) >= 0, draggable = false,
+                            side = o.side, lots = o.lots, entryPrice = entry, handles = handles,
+                        ),
                     )
-                    o.sl?.let { lines.add(ChartOrderLine(o.id, OrderLineKind.SL, it, "SL", null, false, true)) }
-                    o.tp?.let { lines.add(ChartOrderLine(o.id, OrderLineKind.TP, it, "TP", null, true, true)) }
+                    o.sl?.let {
+                        lines.add(levelLine(o, OrderLineKind.SL, it, entry))
+                    }
+                    o.tp?.let {
+                        lines.add(levelLine(o, OrderLineKind.TP, it, entry))
+                    }
                     controller.barIndexForTs(o.openedAt ?: 0L).takeIf { it >= 0 }?.let {
                         markers.add(ChartMarker(it, entry, entry = true, long = o.side == Side.LONG))
                     }
                 }
                 OrderStatus.PENDING -> {
                     val price = o.entryPrice ?: continue
-                    lines.add(ChartOrderLine(o.id, OrderLineKind.PENDING, price, pendingLabel(o), null, true, true))
+                    val handles = buildList {
+                        if (o.sl == null) add(OrderLineKind.SL)
+                        if (o.tp == null) add(OrderLineKind.TP)
+                    }
+                    lines.add(
+                        ChartOrderLine(
+                            id = o.id, kind = OrderLineKind.PENDING, price = price, label = pendingLabel(o),
+                            draggable = true, side = o.side, lots = o.lots, entryPrice = price, handles = handles,
+                        ),
+                    )
+                    o.sl?.let { lines.add(levelLine(o, OrderLineKind.SL, it, price)) }
+                    o.tp?.let { lines.add(levelLine(o, OrderLineKind.TP, it, price)) }
                 }
                 OrderStatus.CLOSED -> {
                     val exit = o.closePrice ?: continue
@@ -309,7 +335,47 @@ class TradingViewModel @Inject constructor(
                 OrderStatus.CANCELLED -> {}
             }
         }
-        controller.setOverlays(lines, markers)
+        controller.setOverlay(ChartOverlayState(lines = lines, markers = markers, bid = bid, spread = quote.spread))
+    }
+
+    private fun levelLine(o: TradeOrder, kind: OrderLineKind, price: Double, entry: Double) = ChartOrderLine(
+        id = o.id, kind = kind, price = price, draggable = true,
+        side = o.side, lots = o.lots, entryPrice = entry,
+    )
+
+    /**
+     * Persist a level edit from the chart through the same repository the Positions editors
+     * use, so both paths stay identical. Returns the repository's verdict for the UI.
+     */
+    suspend fun applyLevelOutcome(outcome: LevelOutcome): Boolean {
+        var ok = true
+        catchUpMutex.withLock {
+            when (outcome) {
+                is LevelOutcome.Set -> {
+                    if (outcome.kind == OrderLineKind.PENDING) {
+                        trading.movePendingPrice(seasonId, outcome.id, outcome.price)
+                    } else {
+                        val o = trading.order(outcome.id)
+                        if (o != null) {
+                            val sl = if (outcome.kind == OrderLineKind.SL) outcome.price else o.sl
+                            val tp = if (outcome.kind == OrderLineKind.TP) outcome.price else o.tp
+                            trading.editStops(seasonId, outcome.id, sl, tp)
+                        } else ok = false
+                    }
+                }
+                is LevelOutcome.Clear -> {
+                    val o = trading.order(outcome.id)
+                    if (o != null) {
+                        val sl = if (outcome.kind == OrderLineKind.SL) null else o.sl
+                        val tp = if (outcome.kind == OrderLineKind.TP) null else o.tp
+                        trading.editStops(seasonId, outcome.id, sl, tp)
+                    } else ok = false
+                }
+                else -> {}
+            }
+        }
+        refreshDerived()
+        return ok
     }
 
     private fun pnl(o: TradeOrder, bid: Double): Double =
@@ -430,28 +496,6 @@ class TradingViewModel @Inject constructor(
     fun editStops(orderId: Long, sl: Double?, tp: Double?) {
         viewModelScope.launch {
             catchUpMutex.withLock { trading.editStops(seasonId, orderId, sl, tp) }
-            refreshDerived()
-        }
-    }
-
-    /** Called by the chart when an SL/TP or pending line is dragged. */
-    fun dragLine(id: Long, kind: OrderLineKind, price: Double) {
-        val rounded = FillEngine.roundPrice(price)
-        viewModelScope.launch {
-            catchUpMutex.withLock {
-                when (kind) {
-                    OrderLineKind.SL -> {
-                        val o = trading.order(id) ?: return@withLock
-                        trading.editStops(seasonId, id, rounded, o.tp)
-                    }
-                    OrderLineKind.TP -> {
-                        val o = trading.order(id) ?: return@withLock
-                        trading.editStops(seasonId, id, o.sl, rounded)
-                    }
-                    OrderLineKind.PENDING -> trading.movePendingPrice(seasonId, id, rounded)
-                    OrderLineKind.ENTRY -> {}
-                }
-            }
             refreshDerived()
         }
     }
