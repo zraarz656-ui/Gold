@@ -29,6 +29,25 @@ object DatasetImporter {
     const val NEWS_ASSET = "news.json"
     const val BATCH_SIZE = 5_000
 
+    /** Lower bound the bundled asset must clear before it is trusted as real history. */
+    const val MIN_EXPECTED_ROWS = 80_000L
+
+    /** Where a bundled file normally lives once AGP gunzips the `.gz` name away. */
+    const val CANDLE_ASSET_PLAIN = "xauusd_m1.csv"
+
+    /** Candle rows the debug fake fallback writes (when the asset is missing or tiny). */
+    const val FAKE_ROWS = 90_000
+
+    /** How many weeks of trailing time the fake fallback covers. */
+    const val FAKE_WEEKS_BACK = 14L
+
+    /** True when a usable bundled candle asset is present. */
+    fun bundledCandleAsset(assets: AssetSource): String? =
+        CANDLE_CANDIDATES.firstOrNull { assets.exists(it) }
+
+    /** True when the bundled news asset is present. */
+    fun bundledNewsAsset(assets: AssetSource): Boolean = assets.exists(NEWS_ASSET)
+
     /**
      * Asset names to try for the candles, in order.
      *
@@ -37,18 +56,61 @@ object DatasetImporter {
      * the source (and the test resources) are `xauusd_m1.csv.gz`. Resolving both names and
      * sniffing the gzip magic keeps the same source working in tests and in the app.
      */
-    private val CANDLE_CANDIDATES = listOf(CANDLE_ASSET, "xauusd_m1.csv")
+    private val CANDLE_CANDIDATES = listOf(CANDLE_ASSET, CANDLE_ASSET_PLAIN)
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * Import the bundled dataset.
+     *
+     * [allowFake] is a **test-only** escape hatch: it lets a test drive the deterministic
+     * fake generator when the tiny fixture asset cannot clear [minRows]. Production callers
+     * never pass it, so a missing or undersized bundled asset always yields
+     * [DatasetSource.MISSING] and the app shows the data-error screen instead of replaying
+     * generated placeholder data.
+     */
     suspend fun import(
         db: TradeQuestDatabase,
         assets: AssetSource,
         force: Boolean = false,
+        allowFake: Boolean = false,
+        minRows: Long = MIN_EXPECTED_ROWS,
         onProgress: (ImportProgress) -> Unit = {},
     ): ImportResult = withContext(Dispatchers.IO) {
         if (!force && db.candleDao().count() > 0L) {
-            return@withContext summary(db)
+            return@withContext summary(db, DatasetSource.fromId(
+                db.settingsDao().get(SettingsRepository.DATA_SOURCE),
+            ) ?: DatasetSource.BUNDLED)
+        }
+
+        val assetName = bundledCandleAsset(assets)
+        val assetRows = assetName?.let { countAssetRows(assets, it) } ?: 0L
+        val assetUsable = assetRows >= minRows
+
+        // A forced import replaces only candle_1m and news_event; the range is captured so a
+        // change can flag the season (its clock offset depends on the dataset start).
+        var beforeStart = 0L
+        var beforeEnd = 0L
+        if (force) {
+            beforeStart = db.candleDao().minTs() ?: 0L
+            beforeEnd = db.candleDao().maxTs() ?: 0L
+        }
+
+        if (!assetUsable && !allowFake) {
+            // No usable bundled history: report it rather than quietly replaying a fake.
+            if (force) {
+                db.candleDao().deleteAll()
+                db.newsDao().deleteAll()
+            }
+            return@withContext ImportResult(
+                candleCount = db.candleDao().count(),
+                newsCount = db.newsDao().count(),
+                datasetStartMs = db.candleDao().minTs() ?: 0L,
+                datasetEndMs = db.candleDao().maxTs() ?: 0L,
+                source = DatasetSource.MISSING,
+                assetName = assetName,
+                assetRows = assetRows,
+            )
         }
 
         if (force) {
@@ -56,17 +118,73 @@ object DatasetImporter {
             db.newsDao().deleteAll()
         }
 
-        importCandles(db, assets, onProgress)
+        val source: DatasetSource
+        if (assetUsable) {
+            val name = assetName!!
+            importCandles(db, assets, name, onProgress)
+            source = DatasetSource.BUNDLED
+        } else {
+            importFake(db, onProgress)
+            source = DatasetSource.FAKE
+        }
         importNews(db, assets, onProgress)
-        summary(db)
+
+        // Only the two data tables were rewritten. If the dataset's range moved, the season's
+        // fixed offset no longer points at the same window, so flag every existing season to
+        // be reset; trades, stats and snapshots are preserved until the user acts on it.
+        var rangeChanged = false
+        if (force && beforeStart != 0L) {
+            val afterStart = db.candleDao().minTs() ?: 0L
+            val afterEnd = db.candleDao().maxTs() ?: 0L
+            if (afterStart != beforeStart || afterEnd != beforeEnd) {
+                db.seasonDao().flagAllForReset()
+                rangeChanged = true
+            }
+        }
+
+        summary(db, source, assetName, assetRows).copy(rangeChanged = rangeChanged)
+    }
+
+    /** Count candle rows in the asset without importing them. */
+    private suspend fun countAssetRows(assets: AssetSource, name: String): Long = withContext(Dispatchers.IO) {
+        val raw = assets.open(name)
+        BufferedReader(InputStreamReader(gzipOrPlain(raw), Charsets.UTF_8)).useLines { lines ->
+            lines.count { parseCandle(it) != null }
+        }.toLong()
+    }
+
+    /** Write the deterministic fake series into Room when no usable asset is bundled. */
+    private suspend fun importFake(
+        db: TradeQuestDatabase,
+        onProgress: (ImportProgress) -> Unit,
+    ) {
+        onProgress(ImportProgress(ImportProgress.Phase.CANDLES, 0, 0))
+        val generated = FakeCandles.generateWithNews(
+            count = FAKE_ROWS,
+            startMs = FakeCandles.startFor(System.currentTimeMillis(), weeksBack = FAKE_WEEKS_BACK),
+        )
+        val candles = generated.candles.map {
+            Candle1m(it.ts, it.o, it.h, it.l, it.c, it.v)
+        }
+        var done = 0
+        candles.chunked(BATCH_SIZE).forEach { chunk ->
+            db.candleDao().insertAll(chunk)
+            done += chunk.size
+            onProgress(ImportProgress(ImportProgress.Phase.CANDLES, done, candles.size))
+        }
+        db.newsDao().insertAll(
+            generated.news.map { NewsEntity(ts = it.ts, title = it.title, impact = it.impact) },
+        )
+        onProgress(ImportProgress(ImportProgress.Phase.CANDLES, done, done))
     }
 
     private suspend fun importCandles(
         db: TradeQuestDatabase,
         assets: AssetSource,
+        assetName: String,
         onProgress: (ImportProgress) -> Unit,
     ) {
-        val raw = openFirst(assets, CANDLE_CANDIDATES)
+        val raw = assets.open(assetName)
         val reader = BufferedReader(InputStreamReader(gzipOrPlain(raw), Charsets.UTF_8))
         var batch = ArrayList<Candle1m>(BATCH_SIZE)
         var done = 0
@@ -107,10 +225,23 @@ object DatasetImporter {
         onProgress(ImportProgress(ImportProgress.Phase.NEWS, rows.size, rows.size))
     }
 
-    private suspend fun summary(db: TradeQuestDatabase): ImportResult {
+    private suspend fun summary(
+        db: TradeQuestDatabase,
+        source: DatasetSource,
+        assetName: String? = null,
+        assetRows: Long = 0L,
+    ): ImportResult {
         val start = db.candleDao().minTs() ?: 0L
         val end = db.candleDao().maxTs() ?: 0L
-        return ImportResult(db.candleDao().count(), db.newsDao().count(), start, end)
+        return ImportResult(
+            candleCount = db.candleDao().count(),
+            newsCount = db.newsDao().count(),
+            datasetStartMs = start,
+            datasetEndMs = end,
+            source = source,
+            assetName = assetName,
+            assetRows = assetRows,
+        )
     }
 
     internal fun parseCandle(line: String): Candle1m? {

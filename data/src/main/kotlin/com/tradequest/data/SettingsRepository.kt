@@ -17,5 +17,8 @@ class SettingsRepository(private val db: TradeQuestDatabase) {
         const val IMPORT_DONE = "import_done"
         const val RISK_PERCENT = "risk_percent"
         const val LOTS = "last_lots"
+
+        /** Where the stored candles came from; a [DatasetSource] name. */
+        const val DATA_SOURCE = "data_source"
     }
 }

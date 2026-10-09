@@ -16,4 +16,9 @@ data class ImportResult(
     val newsCount: Long,
     val datasetStartMs: Long,
     val datasetEndMs: Long,
+    val source: DatasetSource = DatasetSource.BUNDLED,
+    val assetName: String? = null,
+    val assetRows: Long = 0L,
+    /** True when a forced re-import moved the dataset range and flagged the season. */
+    val rangeChanged: Boolean = false,
 )

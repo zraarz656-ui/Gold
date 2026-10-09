@@ -17,11 +17,12 @@ class DatasetImporterTest {
     @Test
     fun importInsertsEveryValidRow() = runTest {
         val db = TestDb.open()
-        val result = DatasetImporter.import(db, FileAssetSource(assetsDir), force = true)
+        val result = DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
 
         // 4 valid candle rows; the "not,a,valid,row" line is skipped.
         assertEquals(4L, result.candleCount)
         assertEquals(3L, result.newsCount)
+        assertEquals(DatasetSource.BUNDLED, result.source)
         assertEquals(4, db.candleDao().count())
         assertEquals(3, db.newsDao().count())
         assertEquals(Impact.HIGH, db.newsDao().all().first().impact)
@@ -29,10 +30,34 @@ class DatasetImporterTest {
     }
 
     @Test
+    fun reportsMissingSourceWhenAssetIsTooSmallAndFakeIsNotAllowed() = runTest {
+        val db = TestDb.open()
+        // The fixture has 4 rows; with the real 80k floor and fake disabled it is rejected.
+        val result = DatasetImporter.import(
+            db, FileAssetSource(assetsDir), force = true, allowFake = false, minRows = 80_000,
+        )
+        assertEquals(DatasetSource.MISSING, result.source)
+        assertEquals(0, db.candleDao().count())
+        db.close()
+    }
+
+    @Test
+    fun fallsBackToFakeGeneratorOnlyWhenExplicitlyAllowed() = runTest {
+        val db = TestDb.open()
+        val result = DatasetImporter.import(
+            db, FileAssetSource(assetsDir), force = true, allowFake = true, minRows = 80_000,
+        )
+        assertEquals(DatasetSource.FAKE, result.source)
+        assertEquals(DatasetImporter.FAKE_ROWS.toLong(), result.candleCount)
+        assertEquals(DatasetImporter.FAKE_ROWS.toLong(), db.candleDao().count())
+        db.close()
+    }
+
+    @Test
     fun importIsIdempotentUnlessForced() = runTest {
         val db = TestDb.open()
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true)
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = false)
+        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        DatasetImporter.import(db, FileAssetSource(assetsDir), force = false, minRows = 1)
         assertEquals(4, db.candleDao().count())
         assertEquals(3, db.newsDao().count())
         db.close()
@@ -41,8 +66,8 @@ class DatasetImporterTest {
     @Test
     fun forceImportReplacesExistingRows() = runTest {
         val db = TestDb.open()
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true)
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true)
+        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
+        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1)
         assertEquals(4, db.candleDao().count())
         db.close()
     }
@@ -51,7 +76,7 @@ class DatasetImporterTest {
     fun batchProgressIsReported() = runTest {
         val db = TestDb.open()
         val phases = mutableSetOf<ImportProgress.Phase>()
-        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true) {
+        DatasetImporter.import(db, FileAssetSource(assetsDir), force = true, minRows = 1) {
             phases.add(it.phase)
         }
         assertEquals(setOf(ImportProgress.Phase.CANDLES, ImportProgress.Phase.NEWS), phases)
@@ -67,7 +92,7 @@ class DatasetImporterTest {
     fun importsPlainCsvWhenAssetWasGunzippedByTheBuild() = runTest {
         val db = TestDb.open()
         val plain = FileAssetSource(File("src/test/resources/plain_assets"))
-        val result = DatasetImporter.import(db, plain, force = true)
+        val result = DatasetImporter.import(db, plain, force = true, minRows = 1)
 
         assertEquals(4L, result.candleCount)
         assertEquals(3L, result.newsCount)

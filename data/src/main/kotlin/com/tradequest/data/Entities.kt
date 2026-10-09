@@ -36,6 +36,8 @@ enum class SeasonStatus { ACTIVE, ENDED }
  * [offsetMs] is the fixed whole-week shift from real time to historical time.
  * [lastProcessedTs] is the last 1-minute candle folded into the engine; catch-up resumes
  * from here, which makes it the crash-safe checkpoint.
+ * [needsReset] is set when a forced data re-import changed the dataset's time range, which
+ * invalidates the season's clock offset; the UI asks the user to start a fresh season.
  */
 @Entity(tableName = "season")
 data class Season(
@@ -47,6 +49,7 @@ data class Season(
     val endedAt: Long? = null,
     val score: Double = 0.0,
     val lastProcessedTs: Long,
+    val needsReset: Boolean = false,
 )
 
 /** Lifecycle state of a trade order. */

@@ -40,6 +40,10 @@ interface CandleDao {
     @Query("SELECT * FROM candle_1m WHERE ts <= :ts ORDER BY ts DESC LIMIT :limit")
     suspend fun lastBefore(ts: Long, limit: Int): List<Candle1m>
 
+    /** All candle timestamps ascending; used to scan for gaps without loading OHLC rows. */
+    @Query("SELECT ts FROM candle_1m ORDER BY ts ASC")
+    suspend fun allTimestamps(): List<Long>
+
     @Query("DELETE FROM candle_1m")
     suspend fun deleteAll()
 }
@@ -81,6 +85,12 @@ interface SeasonDao {
 
     @Query("UPDATE season SET lastProcessedTs = :ts WHERE id = :id")
     suspend fun updateLastProcessed(id: Long, ts: Long)
+
+    @Query("UPDATE season SET needsReset = 1 WHERE needsReset = 0")
+    suspend fun flagAllForReset()
+
+    @Query("UPDATE season SET needsReset = 0 WHERE id = :id")
+    suspend fun clearNeedsReset(id: Long)
 
     @Query("UPDATE season SET status = :status, endedAt = :endedAt, score = :score WHERE id = :id")
     suspend fun end(id: Long, status: SeasonStatus, endedAt: Long, score: Double)

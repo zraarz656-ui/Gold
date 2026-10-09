@@ -16,7 +16,7 @@ import androidx.room.TypeConverters
         EquitySnapshotEntity::class,
         SettingEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
