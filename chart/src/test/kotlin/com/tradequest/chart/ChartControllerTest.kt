@@ -43,9 +43,20 @@ class ChartControllerTest {
     }
 
     @Test
-    fun `dragging the price gutter pins a manual range and shifts it`() {
+    fun `dragging the price gutter does nothing until the range is pinned`() {
         val c = controller()
         assertFalse(c.state.viewport.manualPriceScale)
+        val before = c.currentPriceRange()
+        c.panPriceRange(5.0)
+        assertFalse(c.state.viewport.manualPriceScale)
+        assertEquals(before.min, c.currentPriceRange().min, 0.001)
+    }
+
+    @Test
+    fun `dragging a pinned price range shifts it`() {
+        val c = controller()
+        val base = c.currentPriceRange()
+        c.setManualPriceRange(base.min, base.max)
         val before = c.currentPriceRange()
         c.panPriceRange(5.0)
         assertTrue(c.state.viewport.manualPriceScale)
@@ -55,7 +66,8 @@ class ChartControllerTest {
     @Test
     fun `auto fit restores an auto-scaled range`() {
         val c = controller()
-        c.panPriceRange(10.0)
+        val base = c.currentPriceRange()
+        c.setManualPriceRange(base.min, base.max)
         assertTrue(c.state.viewport.manualPriceScale)
         c.autoFitPrice()
         assertFalse(c.state.viewport.manualPriceScale)
@@ -64,7 +76,8 @@ class ChartControllerTest {
     @Test
     fun `scale price range changes the span`() {
         val c = controller()
-        c.panPriceRange(0.0) // pin the current range
+        val base = c.currentPriceRange()
+        c.setManualPriceRange(base.min, base.max)
         val before = c.currentPriceRange()
         c.scalePriceRange(0.5)
         val after = c.currentPriceRange()

@@ -26,8 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.tradequest.chart.CandleChart
-import com.tradequest.chart.ChartTheme
+import com.tradequest.chart.ChartPanel
 import com.tradequest.chart.CrosshairInfo
 import com.tradequest.chart.TIMEFRAMES
 import com.tradequest.chart.label
@@ -68,28 +67,15 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
 
         if (tab == 0) {
             Box(Modifier.weight(1f)) {
-                CandleChart(
+                ChartPanel(
                     controller = controller,
+                    modifier = Modifier.fillMaxSize(),
                     crosshair = crosshair,
                     onCrosshairChange = { crosshair = it },
                     onLineDrag = { id, kind, price -> viewModel.dragLine(id, kind, price) },
                 )
-                val themeId = controller.state.theme.id
-                Row(
-                    Modifier.align(Alignment.TopEnd).padding(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    ChartTheme.all.forEach { t ->
-                        Chip(t.name, themeId == t.id) { viewModel.setTheme(t) }
-                    }
-                }
                 if (marketClosed) {
                     MarketClosedBanner(Modifier.align(Alignment.Center).padding(8.dp))
-                }
-                if (!controller.state.liveEdgeFollowing) {
-                    Chip("▼ Latest", selected = true, modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)) {
-                        controller.jumpToLatest()
-                    }
                 }
                 Row(
                     Modifier.align(Alignment.BottomStart).padding(8.dp),

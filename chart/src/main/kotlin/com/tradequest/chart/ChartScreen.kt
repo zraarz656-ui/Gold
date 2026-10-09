@@ -2,6 +2,7 @@ package com.tradequest.chart
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,8 +10,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,134 +22,236 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tradequest.engine.NewsEvent
+import com.tradequest.engine.Timeframe
+import java.time.Instant
+import java.time.ZoneOffset
 
 /**
- * The Phase 2 chart screen: a candle chart with a timeframe selector, a live toggle and
- * a crosshair readout. Phase 3 layers the trading UI (order sheet, positions, equity
- * strip) on top of this.
+ * The Phase 2 chart screen: a candle chart with a timeframe selector, a crosshair readout,
+ * a jump-to-latest badge and the developer bar. Phase 3 reuses its pieces through
+ * [ChartToolbar], [ChartPanel] and [ChartDevBar].
  */
 @Composable
 fun ChartScreen(
     viewModel: ChartViewModel,
     modifier: Modifier = Modifier,
-    showDebug: Boolean = false,
+    showFps: Boolean = true,
+    showGestureDebug: Boolean = true,
 ) {
     val controller = viewModel.controller
     if (controller == null) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Loading data…")
+        Box(
+            modifier.fillMaxSize().background(ChartTheme.DARK.background),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("Generating 90k candles…", color = ChartTheme.DARK.axisText)
         }
         return
     }
-
-    var crosshair by remember { mutableStateOf<CrosshairInfo?>(null) }
-    var newsPopup by remember { mutableStateOf<NewsEvent?>(null) }
     val state = controller.state
-
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(state.theme.background),
-    ) {
-        TimeframeBar(controller)
-        Box(Modifier.weight(1f)) {
-            CandleChart(
+    var crosshair by remember { mutableStateOf<CrosshairInfo?>(null) }
+    Box(modifier.fillMaxSize().background(state.theme.background), contentAlignment = Alignment.TopStart) {
+        Column(Modifier.fillMaxSize()) {
+            ChartToolbar(controller)
+            ChartPanel(
                 controller = controller,
                 crosshair = crosshair,
                 onCrosshairChange = { crosshair = it },
-                onNewsTap = { newsPopup = it },
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                showFps = showFps,
+                showGestureDebug = showGestureDebug,
+                debug = viewModel.gestureDebug,
+                liveRunning = viewModel.liveRunning,
             )
-            crosshair?.let {
-                CrosshairReadout(controller, it, Modifier.align(Alignment.TopStart).padding(8.dp))
-            }
-            newsPopup?.let {
-                NewsPopup(it, Modifier.align(Alignment.TopEnd).padding(8.dp)) { newsPopup = null }
-            }
-            if (!controller.state.liveEdgeFollowing) {
-                JumpToLatestBadge(controller, Modifier.align(Alignment.BottomEnd).padding(8.dp))
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ChartTheme.all.forEach { t ->
-                    Pill(t.name, selected = state.theme.id == t.id) { controller.setTheme(t) }
-                }
-            }
-            Pill(if (viewModel.liveRunning) "Stop" else "Live") { viewModel.toggleLive() }
+            ChartDevBar(viewModel)
         }
     }
 }
 
+/** Timeframe pills. Phase 2 drew these above the chart; Phase 3 keeps them in its header row. */
 @Composable
-private fun TimeframeBar(controller: ChartController) {
+fun ChartToolbar(
+    controller: ChartController,
+    modifier: Modifier = Modifier,
+    selected: (Timeframe) -> Boolean = { it == controller.state.timeframe },
+    onPick: (Timeframe) -> Unit = { controller.setTimeframe(it) },
+) {
     val state = controller.state
     Row(
-        Modifier.fillMaxWidth().padding(8.dp),
+        modifier.fillMaxWidth().background(state.theme.background).padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         TIMEFRAMES.forEach { tf ->
-            Pill(tf.label(), selected = state.timeframe == tf) { controller.setTimeframe(tf) }
+            Pill(tf.label(), state, selected(tf)) { onPick(tf) }
+        }
+    }
+}
+
+/**
+ * The chart itself plus everything that floats over it: crosshair readout, jump-to-latest
+ * badge, gesture/FPS overlays and the news dialog. This is the piece Phase 3 embeds.
+ */
+@Composable
+fun ChartPanel(
+    controller: ChartController,
+    modifier: Modifier = Modifier,
+    crosshair: CrosshairInfo? = null,
+    onCrosshairChange: (CrosshairInfo?) -> Unit = {},
+    onNewsTap: (NewsEvent) -> Unit = {},
+    onLineDrag: (Long, OrderLineKind, Double) -> Unit = { _, _, _ -> },
+    debug: GestureDebug? = null,
+    liveRunning: Boolean = false,
+    showFps: Boolean = false,
+    showGestureDebug: Boolean = false,
+) {
+    val state = controller.state
+    var debugExpanded by remember { mutableStateOf(true) }
+    var newsPopup by remember { mutableStateOf<NewsEvent?>(null) }
+
+    Box(modifier, contentAlignment = Alignment.TopStart) {
+        CandleChart(
+            controller = controller,
+            modifier = Modifier.fillMaxSize(),
+            displayOffsetMs = state.displayOffsetMs,
+            debug = debug,
+            crosshair = crosshair,
+            onCrosshairChange = onCrosshairChange,
+            onNewsTap = { newsPopup = it; onNewsTap(it) },
+            onLineDrag = onLineDrag,
+        )
+        val ch = crosshair
+        if (ch != null) {
+            CrosshairReadout(controller, ch, Modifier.align(Alignment.TopEnd).padding(top = 62.dp))
+        }
+        if (!state.liveEdgeFollowing) {
+            JumpToLatestBadge(controller, Modifier.align(Alignment.BottomEnd))
+        }
+        if (showGestureDebug && debug != null) {
+            GestureDebugOverlay(
+                controller = controller,
+                debug = debug,
+                liveRunning = liveRunning,
+                expanded = debugExpanded,
+                onToggle = { debugExpanded = !debugExpanded },
+                modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
+            )
+        }
+        if (showFps) FpsOverlay(Modifier.align(Alignment.BottomEnd))
+    }
+    newsPopup?.let { ev -> NewsDialog(ev, state.displayOffsetMs) { newsPopup = null } }
+}
+
+/** The Phase 2 developer bar: live toggle, draw mode, auto-fit and theme pills. */
+@Composable
+fun ChartDevBar(viewModel: ChartViewModel, modifier: Modifier = Modifier) {
+    val controller = viewModel.controller ?: return
+    val state = controller.state
+    Row(
+        modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Pill(if (viewModel.liveRunning) "Stop live" else "Live +1/s", state, viewModel.liveRunning) { viewModel.toggleLive() }
+        Pill(if (state.drawMode) "Draw: on" else "Draw: off", state, state.drawMode) {
+            controller.setDrawMode(!state.drawMode)
+        }
+        Pill("Auto-fit", state) { controller.resetPriceScale() }
+        ChartTheme.all.forEach { t ->
+            Pill(t.name, state, state.theme.id == t.id) { controller.setTheme(t) }
         }
     }
 }
 
 @Composable
-private fun CrosshairReadout(controller: ChartController, info: CrosshairInfo, modifier: Modifier = Modifier) {
+private fun CrosshairReadout(controller: ChartController, crosshair: CrosshairInfo, modifier: Modifier = Modifier) {
     val theme = controller.state.theme
-    val c = info.candle
-    val text = "O ${formatPrice(c.o)}  H ${formatPrice(c.h)}  L ${formatPrice(c.l)}  C ${formatPrice(c.c)}\n" +
-        "Vol ${c.v.toLong()}   Px ${formatPrice(info.price)}"
-    Text(
-        text,
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(theme.grid)
-            .padding(8.dp),
-        color = theme.axisText,
-        fontSize = 11.sp,
-    )
-}
-
-@Composable
-private fun NewsPopup(news: NewsEvent, modifier: Modifier = Modifier, onDismiss: () -> Unit) {
-    Text(
-        "${news.impact}  ${news.title}",
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xCC000000))
-            .clickable { onDismiss() }
-            .padding(8.dp),
-        color = Color.White,
-        fontSize = 12.sp,
-    )
+    val c = crosshair.candle
+    val pct = GestureMath.changePercent(c)
+    val offset = controller.state.displayOffsetMs
+    Column(
+        modifier
+            .padding(6.dp)
+            .background(theme.background.copy(alpha = 0.85f), RoundedCornerShape(4.dp))
+            .padding(6.dp),
+    ) {
+        Text(formatDateTime(c.ts + offset), color = theme.axisText, fontSize = 10.sp)
+        Text(
+            "O ${formatPrice(c.o)}  H ${formatPrice(c.h)}  L ${formatPrice(c.l)}  C ${formatPrice(c.c)}",
+            color = theme.axisText,
+            fontSize = 10.sp,
+        )
+        Text(
+            "%+.2f%%".format(pct),
+            color = if (pct < 0.0) theme.down else theme.up,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Text("${formatPrice(crosshair.price)} @ cursor", color = theme.crosshair, fontSize = 10.sp)
+    }
 }
 
 @Composable
 private fun JumpToLatestBadge(controller: ChartController, modifier: Modifier = Modifier) {
-    val n = controller.pendingNewCandles
-    Pill(if (n > 0) "▼ $n new" else "▼ Latest", selected = true, modifier = modifier) { controller.jumpToLatest() }
+    val theme = controller.state.theme
+    val pending = controller.pendingNewCandles
+    Box(
+        modifier
+            .padding(10.dp)
+            .background(theme.currentPrice, RoundedCornerShape(14.dp))
+            .clickable { controller.jumpToLatest() }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Row {
+            Text("Jump to latest", color = Color.White, fontSize = 12.sp)
+            if (pending > 0) {
+                Box(
+                    Modifier
+                        .padding(start = 6.dp)
+                        .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                ) {
+                    Text("$pending new", color = Color.White, fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+/** Tile used by the timeframe bar, the dev bar and the Phase 3 header. */
+@Composable
+fun Pill(label: String, state: ChartState, selected: Boolean = false, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .background(if (selected) state.theme.axisText else state.theme.background, RoundedCornerShape(6.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Text(
+            label,
+            color = if (selected) state.theme.background else state.theme.axisText,
+            fontSize = 12.sp,
+        )
+    }
 }
 
 @Composable
-private fun Pill(label: String, selected: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Text(
-        label,
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (selected) Color(0xFF2A3441) else Color(0x223FFFFFFF))
-            .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        color = if (selected) Color.White else Color(0xFFB0BEC5),
-        fontSize = 12.sp,
-        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+private fun NewsDialog(news: NewsEvent, displayOffsetMs: Long, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(formatDateTime(news.ts + displayOffsetMs)) },
+        text = { Text("${news.impact}  ${news.title}") },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+}
+
+private fun formatDateTime(ts: Long): String {
+    val z = Instant.ofEpochMilli(ts).atZone(ZoneOffset.UTC)
+    return String.format("%04d-%02d-%02d %02d:%02d", z.year, z.monthValue, z.dayOfMonth, z.hour, z.minute)
 }

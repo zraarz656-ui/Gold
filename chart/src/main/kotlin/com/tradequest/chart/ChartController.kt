@@ -210,8 +210,8 @@ class ChartController(
     }
 
     fun panPriceRange(delta: Double) {
-        // Pin the current range (auto-fit when not already pinned) and shift it, so a drag
-        // on the price gutter works whether or not the axis was already manual.
+        // Only a pinned (manual) price range can be dragged; auto-fit follows the data.
+        if (!state.viewport.manualPriceScale) return
         val changed = ChartMath.panRange(currentPriceRange(), delta)
         setManualPriceRange(changed.min, changed.max)
     }

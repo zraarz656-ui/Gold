@@ -1,9 +1,11 @@
 package com.tradequest.chart
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -15,33 +17,38 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import com.tradequest.engine.NewsEvent
 import kotlin.math.abs
-import kotlin.math.hypot
 
 /**
- * Interactive candlestick chart.
+ * Interactive candlestick chart, ported from Phase 2.
  *
- * Reads everything from [controller] and drives it with a single pointer loop so the
- * gestures do not fight each other:
- *  - one finger on the plot: pan; release with speed: fling
- *  - two fingers: pinch to zoom the time axis (about the centroid)
- *  - one finger on the price gutter: drag the price range up/down
+ * One pointer loop drives every gesture so they cannot fight each other:
+ *  - one finger on the plot: pan; the release velocity flings with decay
+ *  - two fingers: pinch to zoom the time axis about the centroid
+ *  - one finger on the price gutter (or a mostly-vertical drag): drag the price range
  *  - two fingers on the price gutter: scale the price range
- *  - long press: crosshair readout
- *  - double tap: auto-fit the price range
- *  - drag a draggable order line (SL/TP): edit that order
+ *  - long press: crosshair readout that tracks the finger
+ *  - double tap on the gutter: auto-fit the price range
+ *  - tap next to the time axis: open the nearest news; tap on the plot: clear the crosshair
+ *  - drag an order line (Phase 3): edit that order
+ *
+ * [onLineDrag] is the only Phase 3 addition; everything else mirrors the recovered
+ * Phase 2 behaviour.
  */
 @Composable
 fun CandleChart(
     controller: ChartController,
     modifier: Modifier = Modifier,
     displayOffsetMs: Long = 0L,
+    debug: GestureDebug? = null,
     crosshair: CrosshairInfo? = null,
     onCrosshairChange: (CrosshairInfo?) -> Unit = {},
     onNewsTap: (NewsEvent) -> Unit = {},
@@ -52,33 +59,30 @@ fun CandleChart(
     val bottomAxisPx = with(LocalDensity.current) { 20.dp.toPx() }
     val textMeasurer = rememberTextMeasurer()
     val paths = remember { CandlePaths() }
-    var canvasSize by remember { mutableStateOf(Size.Zero) }
 
-    // Persisted across gestures so double taps can be recognised.
-    var lastTapUpMs by remember { mutableStateOf(0L) }
-    var lastTapPos by remember { mutableStateOf(Offset.Zero) }
+    var size by remember { mutableStateOf(Size.Zero) }
+    var longPressActive by remember { mutableStateOf(false) }
+    var flingVelocity by remember { mutableStateOf(0f) }
+    var flingToken by remember { mutableStateOf(0L) }
 
-    // Fling runs as a frame animation outside the (restricted) pointer coroutine.
-    var fling by remember { mutableStateOf<Pair<Int, Float>?>(null) }
-    var flingToken by remember { mutableStateOf(0) }
-
-    val currentCrosshair by rememberUpdatedState(crosshair)
+    val currentController by rememberUpdatedState(controller)
+    val currentDebug by rememberUpdatedState(debug)
     val currentOnCrosshair by rememberUpdatedState(onCrosshairChange)
     val currentOnNewsTap by rememberUpdatedState(onNewsTap)
     val currentOnLineDrag by rememberUpdatedState(onLineDrag)
 
     LaunchedEffect(displayOffsetMs) { controller.setDisplayOffset(displayOffsetMs) }
 
-    LaunchedEffect(fling) {
-        val (_, startVelocity) = fling ?: return@LaunchedEffect
-        var velocity = startVelocity
+    LaunchedEffect(flingToken) {
+        if (flingToken == 0L) return@LaunchedEffect
+        var velocity = flingVelocity
         var previous = withFrameNanos { it }
         var frames = 0
         while (abs(velocity) >= GestureMath.FLING_MIN_VELOCITY && frames < 180) {
             val now = withFrameNanos { it }
             val dt = ((now - previous) / 1_000_000_000.0).toFloat().coerceIn(0f, 0.05f)
             previous = now
-            controller.pan(-velocity * dt)
+            controller.pan(velocity * dt)
             velocity = GestureMath.decay(velocity)
             frames++
         }
@@ -86,128 +90,151 @@ fun CandleChart(
 
     Canvas(
         modifier = modifier
-            .fillMaxSize()
+            .background(controller.state.theme.background)
             .onSizeChanged { s ->
-                canvasSize = Size(s.width.toFloat(), s.height.toFloat())
+                size = Size(s.width.toFloat(), s.height.toFloat())
                 controller.onLayout(density, maxOf(s.width - axisWidthPx, 1f))
             }
-            .pointerInput(controller) {
+            .pointerInput(currentController, axisWidthPx, bottomAxisPx) {
+                var lastTapUpMs = 0L
+                var lastTapPos = Offset.Zero
+
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val downPos = down.position
-                    val onAxis = downPos.x > (canvasSize.width - axisWidthPx).coerceAtLeast(1f)
+                    val slop = viewConfiguration.touchSlop
                     val longPressMs = viewConfiguration.longPressTimeoutMillis
                     val doubleTapMs = viewConfiguration.doubleTapTimeoutMillis
-                    val slop = viewConfiguration.touchSlop
+                    val canvas = this@pointerInput.size.toSize()
+                    val onAxis = down.position.x > (canvas.width - axisWidthPx)
 
-                    // A draggable order line under the finger takes priority over panning.
-                    val startGeo = geometryFor(controller.state, canvasSize, axisWidthPx, bottomAxisPx)
-                    var dragTarget = if (onAxis) null else nearestLine(controller.state, startGeo, downPos.y)
-
-                    var lastPos = downPos
-                    var eventTime = down.uptimeMillis
-                    var moved = false
-                    var longPressFired = false
-                    var lastSpan = 0f
+                    var lastX = down.position.x
+                    var lastY = down.position.y
+                    var moved = 0f
+                    var lpFired = false
+                    var pinching = false
+                    var panning = false
+                    var scaleStarted = false
+                    var scaleStartMin = 0.0
+                    var scaleStartMax = 0.0
+                    var dragLine: ChartOrderLine? = null
                     val panSamples = ArrayList<Pair<Long, Float>>(16)
-                    panSamples.add(down.uptimeMillis to downPos.x)
+                    panSamples.add(down.uptimeMillis to down.position.x)
+                    if (!onAxis) {
+                        dragLine = nearestLine(controller.state, geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx), down.position.y)
+                    }
 
                     while (true) {
                         val event = awaitPointerEvent()
-                        val pressed = event.changes.filter { it.pressed }
-                        val primary = event.changes.firstOrNull { it.id == down.id }
-                            ?: event.changes.firstOrNull() ?: break
-                        eventTime = primary.uptimeMillis
-                        val delta = primary.position - lastPos
+                        currentDebug?.let { it.handlerRuns += 1 }
+                        val change: PointerInputChange? = event.changes.firstOrNull { it.id == down.id }
+                        val contacts = event.changes.count { it.pressed }
+                        currentDebug?.pointerCount = contacts
 
-                        if (pressed.size >= 2) {
-                            lastSpan = applyPinch(controller, pressed.map { it.position }, lastSpan, onAxis)
-                            moved = true
+                        if (change == null || !change.pressed) break
+                        val geo = geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx)
+                        moved = maxOf(moved, (change.position - down.position).getDistance())
+
+                        // Long press -> crosshair that tracks the finger.
+                        if (!lpFired && contacts == 1 && !onAxis && moved <= slop &&
+                            change.uptimeMillis - down.uptimeMillis >= longPressMs
+                        ) {
+                            lpFired = true
+                            longPressActive = true
+                            currentDebug?.longPressActive = true
+                            emitCrosshair(controller, change.position.x, change.position.y, geo, currentOnCrosshair)
+                            change.consume()
+                        } else if (longPressActive) {
+                            change.consume()
+                            emitCrosshair(controller, change.position.x, change.position.y, geo, currentOnCrosshair)
+                        } else if (contacts >= 2) {
+                            pinching = true
+                            currentDebug?.mode = "PINCH"
+                            val zoom = event.calculateZoom()
+                            val centroid = event.calculateCentroid()
+                            currentDebug?.lastZoom = zoom
+                            if (zoom != 1f && centroid != Offset.Unspecified) controller.zoom(centroid.x, zoom)
                             event.changes.forEach { it.consume() }
-                        } else if (pressed.size == 1) {
-                            lastSpan = 0f
-                            if (delta.getDistance() > slop) moved = true
-                            val target = dragTarget
-                            when {
-                                target != null -> {
-                                    val geo = geometryFor(controller.state, canvasSize, axisWidthPx, bottomAxisPx)
-                                    val price = ChartMath.yToPrice(primary.position.y, geo.priceRange, geo.top, geo.bottom)
-                                    currentOnLineDrag(target.id, target.kind, price)
-                                    event.changes.forEach { it.consume() }
-                                }
-                                moved && onAxis -> {
-                                    val geo = geometryFor(controller.state, canvasSize, axisWidthPx, bottomAxisPx)
-                                    val span = geo.priceRange.max - geo.priceRange.min
-                                    controller.panPriceRange(-(delta.y / geo.height) * span)
-                                    event.changes.forEach { it.consume() }
-                                }
-                                moved -> {
-                                    controller.pan(-delta.x)
-                                    panSamples.add(primary.uptimeMillis to primary.position.x)
-                                    event.changes.forEach { it.consume() }
-                                }
-                                !longPressFired && down.uptimeMillis + longPressMs <= primary.uptimeMillis -> {
-                                    longPressFired = true
-                                    val geo = geometryFor(controller.state, canvasSize, axisWidthPx, bottomAxisPx)
-                                    emitCrosshair(controller, primary.position.x, primary.position.y, geo, currentOnCrosshair)
-                                }
+                        } else if (onAxis) {
+                            currentDebug?.mode = "PRICE_SCALE"
+                            if (!scaleStarted) {
+                                scaleStarted = true
+                                scaleStartMin = geo.priceRange.min
+                                scaleStartMax = geo.priceRange.max
+                            }
+                            controller.setManualPriceRange(scaleStartMin, scaleStartMax)
+                            val totalDy = change.position.y - down.position.y
+                            val factor = GestureMath.priceScaleFactor(totalDy, geo.height)
+                            controller.scalePriceRange(factor)
+                            currentDebug?.lastZoom = factor.toFloat()
+                            event.changes.forEach { it.consume() }
+                        } else if (dragLine != null) {
+                            currentDebug?.mode = "LINE"
+                            val line = dragLine!!
+                            currentOnLineDrag(line.id, line.kind, ChartMath.yToPrice(change.position.y, geo.priceRange, geo.top, geo.bottom))
+                            event.changes.forEach { it.consume() }
+                        } else if (controller.state.viewport.manualPriceScale &&
+                            abs(change.position.y - lastY) > 0f &&
+                            abs(change.position.y - lastY) > abs(change.position.x - lastX)
+                        ) {
+                            currentDebug?.mode = "PRICE_DRAG"
+                            val perPx = geo.priceRange.span / maxOf(geo.height, 1f)
+                            controller.panPriceRange((change.position.y - lastY) * perPx)
+                            event.changes.forEach { it.consume() }
+                        } else {
+                            val dx = change.position.x - lastX
+                            if (dx != 0f) {
+                                panning = true
+                                currentDebug?.mode = "PAN"
+                                currentDebug?.lastDx = dx
+                                controller.pan(-dx)
+                                panSamples.add(change.uptimeMillis to change.position.x)
                             }
                         }
-
-                        lastPos = primary.position
-                        if (event.changes.none { it.pressed }) break
+                        lastX = change.position.x
+                        lastY = change.position.y
                     }
-                    dragTarget = null
 
-                    val geo = geometryFor(controller.state, canvasSize, axisWidthPx, bottomAxisPx)
-                    val isDouble = eventTime - lastTapUpMs < doubleTapMs &&
-                        (downPos - lastTapPos).getDistance() < slop * 2f
-                    when {
-                        !moved && !longPressFired && isDouble && onAxis -> {
-                            controller.autoFitPrice()
+                    if (!panning && !pinching && !lpFired && dragLine == null && moved <= slop) {
+                        val now = down.uptimeMillis
+                        val isDouble = (now - lastTapUpMs) <= doubleTapMs &&
+                            (down.position - lastTapPos).getDistance() <= 2f * slop
+                        if (isDouble) {
+                            if (onAxis) controller.autoFitPrice()
                             lastTapUpMs = 0L
-                        }
-                        !moved && !longPressFired && !onAxis -> {
-                            lastTapUpMs = eventTime
-                            lastTapPos = downPos
-                            if (currentCrosshair != null) currentOnCrosshair(null) else tapNews(controller, downPos.x, geo, currentOnNewsTap)
-                        }
-                        !moved && !longPressFired -> {
-                            lastTapUpMs = eventTime
-                            lastTapPos = downPos
-                        }
-                        !onAxis && moved -> {
-                            val v = GestureMath.velocity(panSamples)
-                            if (GestureMath.shouldFling(v)) {
-                                flingToken += 1
-                                fling = flingToken to v
+                        } else {
+                            lastTapUpMs = now
+                            lastTapPos = down.position
+                            if (!onAxis) {
+                                // Tap next to the time axis opens the nearest news; elsewhere clears the crosshair.
+                                if (down.position.y >= canvas.height - bottomAxisPx) {
+                                    tapNews(controller, down.position.x, geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx), currentOnNewsTap)
+                                } else {
+                                    currentOnCrosshair(null)
+                                }
                             }
                         }
+                    }
+
+                    // A pan that ends with speed flings on.
+                    if (panning && !pinching && !lpFired && !onAxis) {
+                        val velocity = -GestureMath.velocity(panSamples)
+                        if (GestureMath.shouldFling(velocity)) {
+                            flingVelocity = velocity
+                            flingToken += 1
+                        }
+                    }
+                    if (longPressActive) {
+                        longPressActive = false
+                        currentDebug?.longPressActive = false
                     }
                 }
             },
     ) {
-        val geo = geometryFor(controller.state, canvasSize, axisWidthPx, bottomAxisPx)
+        val geo = geometryFor(controller.state, size, axisWidthPx, bottomAxisPx)
         drawChart(controller.state, geo, textMeasurer, paths, crosshair, density)
         drawTimeAxis(controller.state, geo, textMeasurer, density)
         if (controller.state.marketClosed) drawMarketClosedBanner(controller.state, geo, textMeasurer)
     }
-}
-
-/** Pinch handling: time zoom on the plot, price scaling on the gutter. */
-private fun applyPinch(
-    controller: ChartController,
-    positions: List<Offset>,
-    previousSpan: Float,
-    onAxis: Boolean,
-): Float {
-    val span = hypot(positions[1].x - positions[0].x, positions[1].y - positions[0].y)
-    if (previousSpan > 0f && span > 0f) {
-        val factor = span / previousSpan
-        if (onAxis) controller.scalePriceRange(1.0 / factor.toDouble())
-        else controller.zoom((positions[0].x + positions[1].x) / 2f, factor)
-    }
-    return span
 }
 
 /** The closest draggable line to [y], within a finger-sized band. */

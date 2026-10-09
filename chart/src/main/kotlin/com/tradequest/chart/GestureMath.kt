@@ -67,4 +67,8 @@ object GestureMath {
         val h = maxOf(viewportHeightPx, 1f)
         return exp((totalDyPx / h).toDouble())
     }
+
+    /** Percentage move from a candle's open to its close; 0 when there is no open. */
+    fun changePercent(c: com.tradequest.engine.Candle): Double =
+        if (c.o == 0.0) 0.0 else 100.0 * ((c.c - c.o) / c.o)
 }
