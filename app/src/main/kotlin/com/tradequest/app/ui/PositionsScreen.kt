@@ -64,7 +64,7 @@ fun PositionsScreen(
             item { SectionHeader("Pending orders (${pending.size})") }
             if (pending.isEmpty()) item { EmptyRow("No pending orders") }
             items(pending, key = { "p-${it.id}" }) { o ->
-                PendingCard(o, onCancel)
+                PendingCard(o, displayOffsetMs, onCancel)
             }
             item { SectionHeader("Closed trades (${closed.size})") }
             if (closed.isEmpty()) item { EmptyRow("No closed trades") }
@@ -159,7 +159,7 @@ private fun PositionCard(
 }
 
 @Composable
-private fun PendingCard(order: TradeOrder, onCancel: (Long) -> Unit) {
+private fun PendingCard(order: TradeOrder, displayOffsetMs: Long, onCancel: (Long) -> Unit) {
     val c = tradeColors
     Column(Modifier.fillMaxWidth().background(c.surfaceVariant).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -173,6 +173,7 @@ private fun PendingCard(order: TradeOrder, onCancel: (Long) -> Unit) {
             "SL ${order.sl?.let { "%.2f".format(it) } ?: "—"}   TP ${order.tp?.let { "%.2f".format(it) } ?: "—"}",
             color = c.onSurfaceVariant, fontSize = 11.sp,
         )
+        order.openedAt?.let { Text("Placed ${formatDateTime(it + displayOffsetMs)}", color = c.onSurfaceVariant, fontSize = 10.sp) }
         OutlinedButton(onClick = { onCancel(order.id) }) { Text("Cancel") }
     }
 }

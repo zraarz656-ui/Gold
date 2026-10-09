@@ -14,10 +14,13 @@ import com.tradequest.data.AssetSource
 import com.tradequest.data.CandleRepository
 import com.tradequest.data.CatchUpProcessor
 import com.tradequest.data.DailyStatsDao
+import com.tradequest.data.DatabaseIntrospector
 import com.tradequest.data.DatasetImporter
+import com.tradequest.data.DatasetSource
 import com.tradequest.data.EquitySnapshotDao
 import com.tradequest.data.EquitySnapshotEntity
 import com.tradequest.data.ImportProgress
+import com.tradequest.data.ImportResult
 import com.tradequest.data.OrderRequest
 import com.tradequest.data.OrderStatus
 import com.tradequest.data.PreferencesStore
@@ -35,6 +38,7 @@ import com.tradequest.engine.ClosedPosition
 import com.tradequest.engine.ClockEngine
 import com.tradequest.engine.FillEngine
 import com.tradequest.engine.MarketCalendar
+import com.tradequest.engine.MarketTime
 import com.tradequest.engine.NewsEvent
 import com.tradequest.engine.OrderType
 import com.tradequest.engine.Side
@@ -54,16 +58,35 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** High-level startup phase, so the UI can show import/catch-up progress. */
-enum class StartupPhase { IMPORTING, CATCHING_UP, READY }
+enum class StartupPhase { IMPORTING, CATCHING_UP, READY, ERROR }
 
 data class StartupState(
     val phase: StartupPhase = StartupPhase.IMPORTING,
     val importFraction: Float = 0f,
     val catchUpFrom: Long = 0L,
     val catchUpTo: Long = 0L,
+    val error: String? = null,
 )
 
 data class Quote(val bid: Double, val ask: Double, val spread: Double)
+
+/**
+ * Snapshot for the "Data (debug)" panel. Times are UTC epoch ms; the UI applies the
+ * display offset and renders in the device zone.
+ */
+data class DataStats(
+    val rowCount: Long = 0L,
+    val firstTs: Long = 0L,
+    val lastTs: Long = 0L,
+    val newsCount: Long = 0L,
+    val weekdayGapCount: Int = 0,
+    val offsetMs: Long = 0L,
+    val histNow: Long = 0L,
+    val lastVisibleTs: Long = 0L,
+    val weeksAhead: Int = 0,
+    val source: DatasetSource = DatasetSource.MISSING,
+    val assetName: String? = null,
+)
 
 data class AccountStrip(
     val balance: Double,
@@ -121,6 +144,17 @@ class TradingViewModel @Inject constructor(
     private val _riskPercent = MutableStateFlow(1.0)
     val riskPercent: StateFlow<Double> = _riskPercent.asStateFlow()
 
+    private val _dataStats = MutableStateFlow(DataStats())
+    val dataStats: StateFlow<DataStats> = _dataStats.asStateFlow()
+
+    /** True only if generated placeholder data was ever imported; drives the red banner. */
+    private val _fakeActive = MutableStateFlow(false)
+    val fakeActive: StateFlow<Boolean> = _fakeActive.asStateFlow()
+
+    /** True when a dataset re-import moved the range; the in-progress season must be reset. */
+    private val _datasetChanged = MutableStateFlow(false)
+    val datasetChanged: StateFlow<Boolean> = _datasetChanged.asStateFlow()
+
     private var news: List<NewsEvent> = emptyList()
     private var seasonId: Long = 0L
     private var offsetMs: Long = 0L
@@ -158,17 +192,49 @@ class TradingViewModel @Inject constructor(
         // Apply the saved theme before anything heavy, so the UI colours are right early.
         controller.setTheme(themeForId(preferences.themeIdOnce()))
         controller.setLabelSize(PriceLabelSize.fromId(preferences.labelSizeIdOnce()))
-        val alreadyImported = settings.get(SettingsRepository.IMPORT_DONE, "0") == "1"
-        if (!alreadyImported) {
-            DatasetImporter.import(db, assets) { p -> reportImport(p) }
-            settings.put(SettingsRepository.IMPORT_DONE, "1")
+        val importedRows = settings.get(SettingsRepository.IMPORT_DONE, "0").toLongOrNull() ?: 0L
+        val storedSource = DatasetSource.fromId(settings.get(SettingsRepository.DATA_SOURCE, ""))
+        // allowFake is never passed here: production code must not replay generated data.
+        // One-time repair: an earlier install that imported a tiny (or no) asset is
+        // superseded by a real import (or surfaced as an error) once the bundle is present.
+        // `force` rewrites candle_1m and news_event only, preserving trades/season rows.
+        val needsImport = importedRows < DatasetImporter.MIN_EXPECTED_ROWS ||
+            storedSource == null || storedSource == DatasetSource.MISSING || storedSource == DatasetSource.FAKE
+        if (needsImport) {
+            val result = DatasetImporter.import(db, assets, force = true) { p -> reportImport(p) }
+            if (result.source == DatasetSource.MISSING) {
+                _startup.value = StartupState(
+                    phase = StartupPhase.ERROR,
+                    error = missingAssetMessage(result),
+                )
+                return
+            }
+            settings.put(SettingsRepository.IMPORT_DONE, result.candleCount.toString())
+            settings.put(SettingsRepository.DATA_SOURCE, result.source.name)
+            _datasetChanged.value = result.rangeChanged
         }
+        _fakeActive.value = settings.get(SettingsRepository.DATA_SOURCE, "") == DatasetSource.FAKE.name
         observeRiskPercent()
+
+        if (_datasetChanged.value) {
+            // The dataset range moved; the stored season offset no longer matches. Surface
+            // it and make the user reset before any catch-up touches a misaligned clock.
+            _startup.value = StartupState(phase = StartupPhase.READY)
+            return
+        }
 
         startSeason()
         ready = true
         observeTicker()
         observeOrders()
+    }
+
+    private fun missingAssetMessage(result: ImportResult): String {
+        val name = result.assetName ?: DatasetImporter.CANDLE_ASSET
+        return "Bundled market data is missing or too small.\n\n" +
+            "Looked for assets/$name (and ${DatasetImporter.CANDLE_ASSET_PLAIN}); " +
+            "found ${result.assetRows} candle rows, need at least ${DatasetImporter.MIN_EXPECTED_ROWS}.\n\n" +
+            "The app will not run on generated placeholder data."
     }
 
     /** Season-dependent startup, shared by first launch and the debug reset. */
@@ -186,8 +252,14 @@ class TradingViewModel @Inject constructor(
     fun debugResetSeason() {
         viewModelScope.launch {
             seasons.resetActive()
+            _datasetChanged.value = false
             startSeason()
             refreshDerived()
+            if (!ready) {
+                ready = true
+                observeTicker()
+                observeOrders()
+            }
         }
     }
 
@@ -252,6 +324,32 @@ class TradingViewModel @Inject constructor(
         controller.replaceData(window, news)
         refreshDerived()
         _quote.value = quoteFrom(window.lastOrNull())
+        refreshDataStats()
+    }
+
+    /** Re-read the small aggregates the "Data (debug)" panel shows, straight from Room. */
+    private suspend fun refreshDataStats() {
+        val summary = DatabaseIntrospector.summary(db)
+        val season = seasons.active()
+        val now = season?.let { seasons.histNow(it) } ?: 0L
+        val lastVisible = if (now > 0L) ClockEngine.lastVisibleCandleTs(now) else 0L
+        val weeksAhead = if (summary.lastTs > lastVisible) {
+            ((summary.lastTs - lastVisible) / MarketTime.WEEK_MS).toInt()
+        } else 0
+        _dataStats.value = DataStats(
+            rowCount = summary.candleCount,
+            firstTs = summary.firstTs,
+            lastTs = summary.lastTs,
+            newsCount = summary.newsCount,
+            weekdayGapCount = DatabaseIntrospector.weekdayGaps(summary).size,
+            offsetMs = season?.offsetMs ?: 0L,
+            histNow = now,
+            lastVisibleTs = lastVisible,
+            weeksAhead = weeksAhead,
+            source = DatasetSource.fromId(settings.get(SettingsRepository.DATA_SOURCE, ""))
+                ?: DatasetSource.MISSING,
+            assetName = DatasetImporter.bundledCandleAsset(assets),
+        )
     }
 
     private fun observeTicker() {
@@ -472,6 +570,11 @@ class TradingViewModel @Inject constructor(
     fun setRiskPercent(percent: Double) {
         _riskPercent.value = percent.coerceIn(0.1, 10.0)
         viewModelScope.launch { settings.put(SettingsRepository.RISK_PERCENT, _riskPercent.value.toString()) }
+    }
+
+    /** Re-read the Data panel aggregates on demand (the sheet's Refresh button). */
+    fun refreshData() {
+        viewModelScope.launch { refreshDataStats() }
     }
 
     fun lotsForRisk(stopDistance: Double): Double =

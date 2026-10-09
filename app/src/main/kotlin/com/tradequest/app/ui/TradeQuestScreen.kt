@@ -15,10 +15,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -44,10 +46,16 @@ import com.tradequest.chart.ChartTheme
 import com.tradequest.chart.CrosshairInfo
 import com.tradequest.chart.PriceLabelSize
 import com.tradequest.chart.TIMEFRAMES
+import com.tradequest.chart.formatDateTime
 import com.tradequest.chart.label
+import com.tradequest.data.DatasetImporter
+import com.tradequest.data.DatasetSource
 import com.tradequest.data.OrderStatus
+import com.tradequest.engine.MarketTime
 import com.tradequest.engine.OrderType
 import kotlinx.coroutines.launch
+import java.time.ZoneId
+import java.time.ZoneOffset
 
 /** The chart must never be shorter than this share of the screen (20:9 phones). */
 private const val MIN_CHART_SCREEN_FRACTION = 0.55f
@@ -64,9 +72,20 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val risk by viewModel.riskPercent.collectAsStateWithLifecycle()
     val marketClosed by viewModel.marketClosed.collectAsStateWithLifecycle()
     val timeTravelExhausted by viewModel.timeTravelExhausted.collectAsStateWithLifecycle()
+    val dataStats by viewModel.dataStats.collectAsStateWithLifecycle()
+    val fakeActive by viewModel.fakeActive.collectAsStateWithLifecycle()
+    val datasetChanged by viewModel.datasetChanged.collectAsStateWithLifecycle()
 
+    if (startup.phase == StartupPhase.ERROR) {
+        DataErrorScreen(startup.error ?: "Market data is unavailable.", modifier)
+        return
+    }
     if (startup.phase != StartupPhase.READY) {
         StartupOverlay(startup, modifier)
+        return
+    }
+    if (datasetChanged) {
+        DatasetChangedScreen(onReset = { viewModel.debugResetSeason() }, modifier = modifier)
         return
     }
 
@@ -84,6 +103,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val minChartHeight = screenHeightDp * MIN_CHART_SCREEN_FRACTION
 
     Column(modifier.fillMaxSize().background(c.surface)) {
+        if (fakeActive) FakeDataBanner()
         EquityStrip(strip, quote)
         // Tabs, timeframes and the settings menu all share one row.
         TradeQuestHeader(
@@ -154,8 +174,10 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
         ChartSettingsSheet(
             theme = controller.state.theme,
             labelSize = controller.state.labelSize,
+            dataStats = dataStats,
             onTheme = { viewModel.setTheme(it) },
             onLabelSize = { viewModel.setLabelSize(it) },
+            onRefreshData = { viewModel.refreshData() },
             onDismiss = { showSettings = false },
         )
     }
@@ -232,8 +254,10 @@ private fun SettingsButton(onClick: () -> Unit) {
 private fun ChartSettingsSheet(
     theme: ChartTheme,
     labelSize: PriceLabelSize,
+    dataStats: DataStats,
     onTheme: (ChartTheme) -> Unit,
     onLabelSize: (PriceLabelSize) -> Unit,
+    onRefreshData: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val c = tradeColors
@@ -262,7 +286,106 @@ private fun ChartSettingsSheet(
                 }
             }
 
-            Text("More chart options coming soon", color = c.onSurfaceVariant, fontSize = 11.sp)
+            Text("Data (debug)", color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            DataPanel(dataStats)
+            OutlinedButton(onClick = onRefreshData, modifier = Modifier.fillMaxWidth()) {
+                Text("Refresh")
+            }
+        }
+    }
+}
+
+/** Read-only dataset facts for the debug Data panel. */
+@Composable
+private fun DataPanel(stats: DataStats) {
+    val zone = ZoneId.systemDefault()
+    fun utc(ts: Long) = if (ts <= 0L) "—" else formatDateTime(ts, ZoneOffset.UTC)
+    fun shown(ts: Long) = if (ts <= 0L) "—" else formatDateTime(ts + stats.offsetMs, zone)
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        DataRow("Rows (1m)", "${stats.rowCount}")
+        DataRow("First candle", "${utc(stats.firstTs)} UTC")
+        DataRow("", "shows ${shown(stats.firstTs)}")
+        DataRow("Last candle", "${utc(stats.lastTs)} UTC")
+        DataRow("", "shows ${shown(stats.lastTs)}")
+        DataRow("Weekday gaps >5m", "${stats.weekdayGapCount}")
+        DataRow("News events", "${stats.newsCount}")
+        DataRow("Offset", "${stats.offsetMs / MarketTime.WEEK_MS} weeks (${stats.offsetMs} ms)")
+        DataRow("histNow", "${utc(stats.histNow)} UTC")
+        DataRow("", "shows ${shown(stats.histNow)}")
+        DataRow("Last visible candle", "${utc(stats.lastVisibleTs)} UTC")
+        DataRow("Weeks ahead of histNow", "${stats.weeksAhead}")
+        DataRow("Data source", stats.source.label)
+        DataRow("Asset", stats.assetName ?: "—")
+        if (stats.source == DatasetSource.FAKE) {
+            DataRow(
+                "",
+                "PLACEHOLDER — bundled asset missing or < ${DatasetImporter.MIN_EXPECTED_ROWS} rows",
+            )
+        }
+    }
+}
+
+@Composable
+private fun DataRow(label: String, value: String) {
+    val c = tradeColors
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = c.onSurfaceVariant, fontSize = 11.sp)
+        Text(value, color = c.onSurface, fontSize = 11.sp)
+    }
+}
+
+/** Loud, unmissable strip while generated placeholder data is active. */
+@Composable
+internal fun FakeDataBanner(modifier: Modifier = Modifier) {
+    val c = tradeColors
+    Row(
+        modifier.fillMaxWidth().background(c.negative).padding(horizontal = 10.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            "FAKE DATA — generated placeholder series, not real history",
+            color = c.onAccent, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+        )
+    }
+}
+
+/** Blocking prompt shown after a data re-import moved the dataset range. */
+@Composable
+internal fun DatasetChangedScreen(onReset: () -> Unit, modifier: Modifier = Modifier) {
+    val c = tradeColors
+    Box(modifier.fillMaxSize().background(c.surface), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Dataset changed — reset season", color = c.warning, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "The bundled market data now covers a different time range, so the " +
+                    "season's clock no longer lines up. Start a fresh season to continue.",
+                color = c.onSurface, fontSize = 13.sp,
+            )
+            Text(
+                "Your open trades, stats and equity history are kept until you reset.",
+                color = c.onSurfaceVariant, fontSize = 11.sp,
+            )
+            Button(onClick = onReset) { Text("Reset season") }
+        }
+    }
+}
+
+/** Fatal data problem shown instead of the app when the bundled asset is unusable. */
+@Composable
+private fun DataErrorScreen(message: String, modifier: Modifier = Modifier) {
+    val c = tradeColors
+    Box(modifier.fillMaxSize().background(c.surface), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Market data error", color = c.negative, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(message, color = c.onSurface, fontSize = 13.sp)
         }
     }
 }
@@ -288,7 +411,7 @@ private fun StartupOverlay(state: StartupState, modifier: Modifier = Modifier) {
                         color = c.onSurfaceVariant, fontSize = 11.sp,
                     )
                 }
-                StartupPhase.READY -> {}
+                StartupPhase.READY, StartupPhase.ERROR -> {}
             }
         }
     }
