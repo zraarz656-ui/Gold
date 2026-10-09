@@ -29,6 +29,25 @@ export ANDROID_HOME=$HOME/android-sdk ANDROID_SDK_ROOT=$HOME/android-sdk
 ./gradlew :data:test :engine:test :app:assembleDebug
 ```
 
+## Phase 1/2 recovery from the debug APK
+
+The original Phase 1/2 sources were never pushed and no longer exist on disk. The provided
+debug APK (`/workspace/recovered/apk/app-debug.apk`) is the **only** source of truth. To
+inspect it:
+
+```bash
+# Standard class decompile (composable bodies are often dumped as bytecode: "Method dump skipped")
+java -jar jadx/bin/jadx --no-res -d out <apk>
+# Reconstructable Kotlin for a single class whose body was skipped:
+java -jar jadx/bin/jadx --no-res --decompilation-mode simple -d out --single-class com.tradequest.chart.ChartScreenKt <apk>
+```
+
+The chart's gesture semantics (one pointer loop: pan/fling/pinch/gutter drag+scale,
+long-press crosshair, double-tap auto-fit, news tap) mirror `CandleChartKt$chartGestures$2`.
+Engine models (`Candle(ts,o,h,l,c,v)`, `EquitySnapshot(ts,equity,balance,usedMargin)`,
+`NewsEvent(ts,title,impact)`), `ChartController`, `ChartState`, `Viewport`, `ChartMath`
+constants and `GestureMath` were diffed field-by-field against the APK and match.
+
 ## Gotchas
 
 - Assets named `*.gz` are transparently gunzipped by AGP when merged into the APK, so the
