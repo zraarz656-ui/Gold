@@ -74,6 +74,22 @@ object MarketCalendar {
     }
 
     /**
+     * True while the FX market is closed for the weekend: from the Friday 17:00 New York
+     * rollover until Sunday 17:00 New York.
+     */
+    fun isClosed(ts: Long): Boolean {
+        val z = zdt(ts)
+        val minutes = z.hour * 60 + z.minute
+        val rollover = MarketTime.ROLLOVER_HOUR * 60
+        return when (z.dayOfWeek.value) {
+            5 -> minutes >= rollover
+            6 -> true
+            7 -> minutes < rollover
+            else -> false
+        }
+    }
+
+    /**
      * Start of the [tf] bucket that contains [ts].
      *
      * @throws IllegalArgumentException if [tf] is [Timeframe.M1], which is already the

@@ -62,7 +62,7 @@ data class Fill(
 )
 
 /** Why a position was closed. */
-enum class CloseReason { SL, TP, STOP_OUT }
+enum class CloseReason { SL, TP, STOP_OUT, MANUAL }
 
 /** A realised close with its profit and loss. */
 data class ClosedPosition(
@@ -75,6 +75,8 @@ data class ClosedPosition(
     val commission: Double,
     val netPnl: Double,
     val reason: CloseReason,
+    /** Timestamp of the candle whose processing closed the position. */
+    val closeTs: Long,
 )
 
 /** Risk events emitted while processing a candle. */
@@ -226,7 +228,7 @@ object FillEngine {
             val tpFill = takeProfitFill(pos, candle, spread)
             val exit = slFill ?: tpFill ?: continue
             val reason = if (slFill != null) CloseReason.SL else CloseReason.TP
-            val result = realise(balance, pos, exit, reason)
+            val result = realise(balance, pos, exit, reason, candle.ts)
             balance = result.first
             closed.add(result.second)
             positions.remove(pos)
@@ -247,7 +249,7 @@ object FillEngine {
             val level = if (used <= 0.0) Double.MAX_VALUE else worstEquity(balance, positions, candle, spread) / used * 100.0
             if (level >= STOP_OUT_LEVEL) break
             val loser = positions.minByOrNull { floating(it, worstMark(it, candle, spread)) }!!
-            val result = realise(balance, loser, worstMark(loser, candle, spread), CloseReason.STOP_OUT)
+            val result = realise(balance, loser, worstMark(loser, candle, spread), CloseReason.STOP_OUT, candle.ts)
             balance = result.first
             closed.add(result.second)
             positions.remove(loser)
@@ -414,7 +416,13 @@ object FillEngine {
         positions.sumOf { worstMark(it, candle, spread) * it.lots }
 
     /** Realise [pos] at [exitPrice]: return the new balance and the close record. */
-    private fun realise(balance: Double, pos: Position, exitPrice: Double, reason: CloseReason): Pair<Double, ClosedPosition> {
+    private fun realise(
+        balance: Double,
+        pos: Position,
+        exitPrice: Double,
+        reason: CloseReason,
+        closeTs: Long,
+    ): Pair<Double, ClosedPosition> {
         val gross =
             if (pos.side == Side.LONG) (exitPrice - pos.entryPrice) * LOT_OZ * pos.lots
             else (pos.entryPrice - exitPrice) * LOT_OZ * pos.lots
@@ -429,8 +437,42 @@ object FillEngine {
             commission = commission,
             netPnl = gross - commission,
             reason = reason,
+            closeTs = closeTs,
         )
     }
+
+    /**
+     * Close an open position at [exitPrice] (the current bid), returning the new state and
+     * the realised trade. Used for manual and partial closes; the candle loop does not
+     * call this. Partial closes keep the original position id on the remainder.
+     *
+     * [closeTs] is the timestamp of the last visible candle (the "now" of the live market)
+     * and becomes [ClosedPosition.closeTs].
+     */
+    fun closePosition(
+        state: AccountState,
+        positionId: Long,
+        exitPrice: Double,
+        closeTs: Long,
+        lots: Double = Double.MAX_VALUE,
+    ): Pair<AccountState, ClosedPosition>? {
+        val pos = state.positions.firstOrNull { it.id == positionId } ?: return null
+        val closingLots = min(lots, pos.lots)
+        if (closingLots <= 0.0) return null
+        val realised = realise(state.balance, pos.copy(lots = closingLots), roundPrice(exitPrice), CloseReason.MANUAL, closeTs)
+        val remainder = pos.lots - closingLots
+        val positions = if (remainder <= 1e-9) {
+            state.positions.filterNot { it.id == positionId }
+        } else {
+            state.positions.map { if (it.id == positionId) pos.copy(lots = roundLots(remainder)) else it }
+        }
+        return state.copy(balance = realised.first, positions = positions) to realised.second
+    }
+
+    /** Cancel a pending order. Returns the new state, or null when [orderId] is unknown. */
+    fun cancelOrder(state: AccountState, orderId: Long): AccountState? =
+        if (state.orders.none { it.id == orderId }) null
+        else state.copy(orders = state.orders.filterNot { it.id == orderId })
 
     /** True if [ts] is within [windowMs] (inclusive) of a HIGH-impact event. */
     private fun withinHighNews(ts: Long, news: List<NewsEvent>, windowMs: Long): Boolean =
