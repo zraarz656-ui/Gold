@@ -111,6 +111,9 @@ class ChartController(
         centerOn(centerTime)
     }
 
+    /** Zoom the time axis about the centre of the plot, for the +/- toolbar buttons. */
+    fun zoomByFactor(factor: Float) = zoom(plotWidthPx / 2f, factor)
+
     private fun refreshActiveBars() {
         state = state.copy(bars = cache.bars(state.timeframe))
     }
@@ -178,6 +181,9 @@ class ChartController(
         state = state.copy(viewport = state.viewport.copy(manualPriceMin = null, manualPriceMax = null, manualPriceScale = false))
     }
 
+    /** Auto-fit the visible price range again after the user has pinned/scaled it. */
+    fun autoFitPrice() = resetPriceScale()
+
     fun setManualPriceRange(min: Double, max: Double) {
         val r = ChartMath.clampManualRange(min, max, ChartMath.fullExtent(state.bars))
         state = state.copy(
@@ -204,10 +210,10 @@ class ChartController(
     }
 
     fun panPriceRange(delta: Double) {
-        if (state.viewport.manualPriceScale) {
-            val changed = ChartMath.panRange(currentPriceRange(), delta)
-            setManualPriceRange(changed.min, changed.max)
-        }
+        // Pin the current range (auto-fit when not already pinned) and shift it, so a drag
+        // on the price gutter works whether or not the axis was already manual.
+        val changed = ChartMath.panRange(currentPriceRange(), delta)
+        setManualPriceRange(changed.min, changed.max)
     }
 
     fun setClock(ms: Long) {

@@ -91,6 +91,14 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                         controller.jumpToLatest()
                     }
                 }
+                Row(
+                    Modifier.align(Alignment.BottomStart).padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Chip("+", selected = false, onClick = { controller.zoomByFactor(1.25f) })
+                    Chip("-", selected = false, onClick = { controller.zoomByFactor(0.8f) })
+                    Chip("Fit", selected = false, onClick = { controller.autoFitPrice() })
+                }
             }
             if (marketClosed) {
                 ClosedFooter()
