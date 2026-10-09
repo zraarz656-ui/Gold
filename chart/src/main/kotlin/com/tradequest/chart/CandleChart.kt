@@ -72,14 +72,16 @@ fun CandleChart(
             ).size.width.toFloat()
         }
     }
-    // The right gutter is measured from the widest label the pill and grid must hold, so
-    // the current-price pill always fits and nothing extends past the screen edge. Keyed on
-    // the label string so a same-width tick does not restart the input loop.
-    val pillLabel = formatPrice(controller.state.bars.lastOrNull()?.c ?: 0.0)
-    val axisWidthPx = remember(density, tagMeasure, controller.state.labelSize, pillLabel) {
+    // The right gutter is measured from the widest price text the pill must hold — the last
+    // close and the visible range's extremes, so the pill fits at any live price — plus 12dp
+    // (6dp each side). Keyed on the labels so a same-width tick does not restart the loop.
+    val lastClose = controller.state.bars.lastOrNull()?.c ?: 0.0
+    val priceRange = controller.currentPriceRange()
+    val priceLabels = listOf(lastClose, priceRange.min, priceRange.max).map { formatPrice(it) }
+    val axisWidthPx = remember(density, tagMeasure, controller.state.labelSize, priceLabels) {
         val (pillSp, gridSp) = ChartGutter.sampleSizes(controller.state.labelScale)
         ChartGutter.widthPx(
-            listOf(pillLabel to pillSp, pillLabel to gridSp),
+            priceLabels.flatMap { listOf(it to pillSp, it to gridSp) },
             tagMeasure,
             density,
         )
@@ -146,11 +148,11 @@ fun CandleChart(
                     // test runs everywhere; a miss simply falls through to pan/scale as before.
                     val hitGeo = geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx)
                     val levelHit: LevelHit? = LevelHitTest.hit(
-                        controller.state.overlay,
+                        controller.state,
                         hitGeo,
-                        down.position.x, down.position.y, controller.state.density, controller.state.labelScale,
+                        down.position.x, down.position.y,
+                        controller.state.selectedEntryId,
                         tagMeasure,
-                        entryGroupsFor(controller.state, hitGeo),
                     )
                     var levelDragging = false
                     val panSamples = ArrayList<Pair<Long, Float>>(16)
@@ -281,9 +283,17 @@ fun CandleChart(
                         // A tap on a merged "N pos" tag jumps to the Positions tab.
                         currentOnEntryGroupTap()
                     } else if (levelHit is LevelHit.EntryTag && moved <= slop) {
-                        // A tap on the entry: strip both levels from the position.
-                        currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.SL))
-                        currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.TP))
+                        // A tap on an open position selects it (showing its "+SL"/"+TP" handles)
+                        // or, when already selected, deselects it. A pending order's tag keeps
+                        // its old meaning: tapping it strips the pending order's levels.
+                        val line = controller.state.orderLines.firstOrNull { it.id == levelHit.lineId }
+                        if (line?.kind == OrderLineKind.ENTRY) {
+                            val current = controller.state.selectedEntryId
+                            controller.selectEntry(if (current == levelHit.lineId) null else levelHit.lineId)
+                        } else {
+                            currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.SL))
+                            currentOnLevelOutcome(LevelOutcome.Clear(levelHit.lineId, OrderLineKind.TP))
+                        }
                     } else if (levelHit != null) {
                         controller.cancelLevelDrag()
                     }

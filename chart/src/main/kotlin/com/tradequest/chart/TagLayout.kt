@@ -14,12 +14,26 @@ object TagLayout {
     /** Clear space kept between two stacked tags. */
     const val GAP = 2f
 
-    fun place(centers: List<Float>, height: Float, top: Float, bottom: Float, gap: Float = GAP): List<Float> {
+    fun place(centers: List<Float>, height: Float, top: Float, bottom: Float, gap: Float = GAP): List<Float> =
+        placeSpaced(centers, height / 2f, top, bottom, height + gap)
+
+    /**
+     * Stack [centers] so consecutive (sorted) values are at least [separation] apart, each
+     * kept inside [top]..[bottom] inset by [halfHeight]. Input order is preserved, so the
+     * caller can index the result against its own slot list. When even [separation] cannot
+     * hold (more slots than room), the run is spread and overlap is the caller's problem.
+     */
+    fun placeSpaced(
+        centers: List<Float>,
+        halfHeight: Float,
+        top: Float,
+        bottom: Float,
+        separation: Float,
+    ): List<Float> {
         val n = centers.size
         if (n == 0) return emptyList()
-        val half = height / 2f
-        val lo = top + half
-        val hi = maxOf(bottom - half, lo)
+        val lo = top + halfHeight
+        val hi = maxOf(bottom - halfHeight, lo)
 
         val order = centers.indices.sortedBy { centers[it] }
         val out = FloatArray(n)
@@ -30,13 +44,13 @@ object TagLayout {
         for (k in 1 until n) {
             val i = order[k]
             val prev = order[k - 1]
-            out[i] = maxOf(out[i], out[prev] + height + gap)
+            out[i] = maxOf(out[i], out[prev] + separation)
         }
         out[order[n - 1]] = minOf(out[order[n - 1]], hi)
         for (k in n - 2 downTo 0) {
             val i = order[k]
             val next = order[k + 1]
-            out[i] = minOf(out[i], out[next] - height - gap)
+            out[i] = minOf(out[i], out[next] - separation)
         }
         for (i in 0 until n) out[i] = out[i].coerceIn(lo, hi)
         return out.toList()

@@ -80,4 +80,14 @@ class TagStyleTest {
         assertEquals(1.0f, PriceLabelSize.default.scale)
         assertEquals(15f, 15f * PriceLabelSize.default.scale)
     }
+
+    @Test
+    fun `the current-price fill is fully opaque when drawn`() {
+        for (theme in ChartTheme.all) {
+            for (up in listOf(true, false)) {
+                val fill = TagStyle.currentPriceFill(theme, up)
+                assertEquals(1f, fill.alpha, 1e-6f, "${theme.name} up=$up pill must be opaque")
+            }
+        }
+    }
 }

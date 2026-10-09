@@ -183,6 +183,12 @@ class ChartController(
         state = state.copy(labelSize = size)
     }
 
+    /** Select the one position whose "+SL"/"+TP" handles show; pass null to clear. */
+    fun selectEntry(lineId: Long?) {
+        if (state.selectedEntryId == lineId) return
+        state = state.copy(selectedEntryId = lineId)
+    }
+
     fun setDrawMode(on: Boolean) {
         state = state.copy(drawMode = on)
     }

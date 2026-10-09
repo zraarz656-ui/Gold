@@ -112,37 +112,25 @@ fun DrawScope.drawChart(
     }
 
     // The crosshair tag (finger) is drawn first; the current-price tag is drawn last so it
-    // is never hidden, even when the crosshair sits on the same price.
+    // is never hidden, even when the crosshair sits on the same price, and always over every
+    // order tag. The pill fills the gutter, which is measured from the widest price text.
     if (crosshairY != null) {
         val inverted = TagStyle.invertedTag(theme)
-        val rect = TagGeom.priceTag(size.width, plot, crosshairY, density, scale)
+        val price = ChartMath.yToPrice(crosshairY, geo.priceRange, plot)
+        val rect = TagGeom.priceTag(size.width, plot, crosshairY, density, scale, measure.width(formatPrice(price), CURRENT_PRICE_TAG_SP * scale))
         drawPriceLabel(
             textMeasurer, rect, inverted.fill,
-            ChartMath.yToPrice(crosshairY, geo.priceRange, plot), scale, theme, textColor = inverted.text,
+            price, scale, theme, textColor = inverted.text,
         )
     }
     if (last != null && currentY != null) {
-        val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale)
+        val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale, measure.width(formatPrice(last.c), CURRENT_PRICE_TAG_SP * scale))
         drawPriceLabel(textMeasurer, rect, currentColor, last.c, scale, theme, textSizeSp = CURRENT_PRICE_TAG_SP)
     }
 
     // The magnified price bubble follows the finger, so it is drawn last and unclipped.
     state.dragPreview?.let { drawDragPreview(state, geo, textMeasurer, it) }
 }
-
-/**
- * The order tags (entry/SL/TP/pending) and their "+SL"/"+TP" handles. Tags are solid pills
- * that end at the plot's right edge and grow left over the candles, so a full price line
- * fits. Each is outlined and bold; draggable SL/TP carry an "x" close box. Tags are stacked
- * by [TagLayout] so no two overlap and none runs off the plot edges.
- */
-internal fun DrawScope.orderTagWidth(
-    measure: TagTextMeasure,
-    text: String,
-    density: Float,
-    scale: Float,
-    closeBox: Boolean,
-): Float = LevelGeometry.orderTagWidth(measure, text, density, scale, closeBox)
 
 /**
  * The order tags (entry/SL/TP/pending) and their "+SL"/"+TP" handles. Each tag shrinks to
@@ -155,106 +143,74 @@ private fun DrawScope.drawOrderOverlays(
     geo: ChartGeometry,
     textMeasurer: TextMeasurer,
     measure: TagTextMeasure,
-): List<TagRect> {
+) {
     val plot = geo.plot
     val scale = state.labelScale
     val density = state.density
     val theme = state.theme
-    val preview = state.dragPreview
-    val tagH = LevelGeometry.tagHeight(density, scale)
+
+    // One frame shared with the hit test: every SL/TP/pending/entry tag (never dropped,
+    // stacked at least 20dp apart) and, for the selected position only, its "+SL"/"+TP"
+    // handles pushed left of the tag column.
+    val frame = orderTagFrameFor(state, geo, measure, state.selectedEntryId)
+    val textSize = (LevelGeometry.ORDER_TAG_SP * scale).sp
     val closeW = LevelGeometry.closeBox(density, scale)
 
-    // Entries that sit within 20dp of each other merge into one grouped tag, so the hit
-    // test and the renderer compute the same clusters.
-    val groups = entryGroupsFor(state, geo)
-    val groupedIds = groups.flatMap { it.ids }.toSet()
+    frame.order.forEachIndexed { i, ft ->
+        val rect = frame.tags[i].rect
 
-    // Every tagged line (committed plus the drag in flight) with its desired Y.
-    data class Tag(val line: ChartOrderLine, val y: Float, val closeBox: Boolean)
-    val wanted = ArrayList<Tag>()
-    for (line in state.orderLines) {
-        if (preview != null && preview.line.id == line.id && preview.line.kind == line.kind) continue
-        if (line.id in groupedIds) continue
-        val yRaw = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
-        if (yRaw < plot.top - tagH || yRaw > plot.bottom + tagH) continue
-        val y = yRaw.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f)
-        wanted.add(Tag(line, y, line.needsCloseBox()))
-    }
-    preview?.let {
-        val yRaw = ChartMath.priceToY(it.price, geo.priceRange, plot)
-        wanted.add(Tag(it.line, yRaw.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f), it.line.needsCloseBox()))
-    }
+        // A displaced tag gets a thin leader back to its line, so a stacked tag is still
+        // unambiguous about which level it names.
+        if (frame.tags[i].leader) {
+            val lineY = frame.tags[i].lineY.coerceIn(0f, size.height)
+            val edge = if (lineY < rect.top) rect.top else rect.bottom
+            val color = TagStyle.outline(theme)
+            drawLine(color, Offset(rect.left + 6f * density, edge), Offset(rect.left + 6f * density, lineY), 1f)
+            drawLine(color, Offset(rect.left + 6f * density, lineY), Offset(plot.right, lineY), 1f)
+        }
 
-    // The free tags are laid out so no two overlap.
-    val centers = wanted.map { it.y }
-    val placed = TagLayout.place(centers, tagH, plot.top, plot.bottom)
-
-    val textSize = (LevelGeometry.ORDER_TAG_SP * scale).sp
-    for ((i, tag) in wanted.withIndex()) {
-        val line = tag.line
-        val text = line.tagText()
-        val width = LevelGeometry.orderTagWidth(measure, text, density, scale, tag.closeBox)
-        val rect = TagGeom.orderTag(plot, placed[i], width, density, scale)
-        // 85% opacity keeps the candles readable through the tag; contrast is measured
-        // against the tag's own colour, so "black or white text" still holds.
-        val fill = TagStyle.ensureContrast(line.color(), ORDER_TAG_MIN_CONTRAST)
+        val base = ft.fillKind?.let { TagStyle.orderColor(it) }
+            ?: if (ft.positive) theme.up else theme.down
+        val fill = TagStyle.ensureContrast(base, ORDER_TAG_MIN_CONTRAST)
             .copy(alpha = LevelGeometry.ORDER_TAG_OPACITY)
-        val textColor = TagStyle.textOn(line.color())
         drawTagBox(rect, fill, theme, density)
-        drawText(
-            textMeasurer, text,
-            Offset(rect.left + LevelGeometry.TAG_PAD_DP * density * scale, rect.top + (rect.height - LevelGeometry.ORDER_TAG_SP * scale) / 2f),
-            TextStyle(textColor, textSize, FontWeight.Bold),
-        )
-        if (tag.closeBox) {
+
+        if (ft.closeBox) {
             val closeLeft = rect.right - closeW
             drawRect(Color(0x66000000), Offset(closeLeft, rect.top), Size(closeW, rect.height))
             drawLine(Color.White, Offset(closeLeft + closeW * 0.3f, rect.centerY - 4f * scale), Offset(closeLeft + closeW * 0.7f, rect.centerY + 4f * scale), 1.5f)
             drawLine(Color.White, Offset(closeLeft + closeW * 0.7f, rect.centerY - 4f * scale), Offset(closeLeft + closeW * 0.3f, rect.centerY + 4f * scale), 1.5f)
         }
+
+        val measured = textMeasurer.measure(ft.text, TextStyle(TagStyle.textOn(fill), textSize, FontWeight.Bold))
+        // Centre the text in the tag's text area (the close box, when present, is excluded).
+        val textArea = rect.width - if (ft.closeBox) closeW else 0f
+        val tx = rect.left + (textArea - measured.size.width) / 2f
+        drawText(measured, topLeft = Offset(maxOf(tx, rect.left + 2f * density), rect.centerY - measured.size.height / 2f))
     }
 
-    // The grouped "N pos  pnl" tags, one per cluster of close entries. Tapping one opens
-    // the Positions tab (resolved by the hit test from the same rectangles).
-    val groupRects = ArrayList<TagRect>()
-    for (g in groups) {
-        val y = g.centerY.coerceIn(plot.top + tagH / 2f, plot.bottom - tagH / 2f)
-        val rect = TagGeom.entryGroupTag(plot, y, density, scale)
-        groupRects.add(rect)
-        val text = groupTagText(g)
-        val fill = TagStyle.ensureContrast(if (g.positive) theme.up else theme.down, ORDER_TAG_MIN_CONTRAST)
-            .copy(alpha = LevelGeometry.ORDER_TAG_OPACITY)
-        drawTagBox(rect, fill, theme, density)
-        val measured = textMeasurer.measure(text, TextStyle(TagStyle.textOn(fill), textSize, FontWeight.Bold))
-        val tx = rect.left + (rect.width - measured.size.width) / 2f
-        drawText(measured, topLeft = Offset(tx, rect.centerY - measured.size.height / 2f))
-    }
-
-    // "+SL"/"+TP" handles for a reference line that has no such level yet, side by side.
-    val hw = LevelGeometry.handleWidth(density, scale)
+    // "+SL"/"+TP" handles: left of the tag column, following the selected position.
     val hh = LevelGeometry.handleHeight(density, scale)
-    for (line in state.orderLines) {
-        val handles = LevelHitTest.handlesOf(line)
-        if (handles.isEmpty()) continue
-        val yRaw = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
-        if (yRaw < plot.top - hh || yRaw > plot.bottom + hh) continue
-        val y = yRaw.coerceIn(plot.top + hh / 2f, plot.bottom - hh / 2f)
-        val start = plot.right - handles.size * hw
-        handles.forEachIndexed { i, kind ->
-            val label = if (kind == OrderLineKind.SL) "+SL" else "+TP"
-            val color = TagStyle.orderColor(kind)
-            val left = start + i * hw
-            val rect = TagRect(left, y - hh / 2f, left + hw, y + hh / 2f)
-            drawTagBox(rect, Color(0xE61A1F27), theme, density)
-            drawRect(color, Offset(left, y - hh / 2f), Size(3f, hh))
-            drawText(
-                textMeasurer, label,
-                Offset(left + 7f * scale, y - 6f * scale),
-                TextStyle(color, (11f * scale).sp, FontWeight.Bold),
-            )
-        }
+    frame.handles.forEachIndexed { i, rect ->
+        val kind = frame.handleTargets[i].kind
+        val label = if (kind == OrderLineKind.SL) "+SL" else "+TP"
+        val color = TagStyle.orderColor(kind)
+        val selY = ChartMath.priceToY(
+            state.orderLines.first { it.id == frame.handleTargets[i].id && it.kind == OrderLineKind.ENTRY }.drawPrice,
+            geo.priceRange, plot,
+        )
+        val selectedBox = TagRect(rect.left, selY - hh / 2f, rect.right, selY + hh / 2f)
+        // A connector from the handle to the selected entry, so the pairing is obvious.
+        drawLine(color.copy(alpha = 0.5f), Offset(rect.left, rect.centerY), Offset(plot.right, selectedBox.centerY), 1f)
+        drawTagBox(rect, Color(0xE61A1F27), theme, density)
+        drawRect(color, Offset(rect.left, rect.top), Size(3f, rect.height))
+        drawText(
+            textMeasurer, label,
+            Offset(rect.left + 7f * scale, rect.centerY - 6f * scale),
+            TextStyle(color, (11f * scale).sp, FontWeight.Bold),
+        )
     }
-    return groupRects
+
 }
 
 /** The text on a merged entry tag: "3 pos  -5.10", matching the entry tag's P&L format. */

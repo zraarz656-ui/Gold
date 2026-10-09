@@ -71,4 +71,34 @@ class TagGeometryTest {
         val rect = TagGeom.priceTag(screenWidth, plot, 300f, density, scale)
         assertTrue(rect.right <= screenWidth + 1e-4f, "pill right ${rect.right} past $screenWidth")
     }
+
+    @Test
+    fun `the pill widens for a price wider than the gutter`() {
+        val screenWidth = 1080f
+        val plot = PlotRect(0f, 0f, screenWidth - 90f, 600f)
+        val rect = TagGeom.priceTag(screenWidth, plot, 300f, density, scale, textWidth = 200f)
+        // 200 + 2 x 6 padding = 212, wider than the 90px gutter.
+        assertEquals(212f, rect.width, 1e-4f)
+        assertEquals(screenWidth, rect.right, 1e-4f)
+    }
+
+    @Test
+    fun `the grouped entry tag keeps its measured width so the text is never clipped`() {
+        val plot = PlotRect(0f, 0f, 800f, 400f)
+        // A wide "2 pos  -1234.56" needs more than the 44dp * 1.6 floor.
+        val rect = TagGeom.entryGroupTag(plot, 200f, textWidth = 150f, density, scale)
+        assertEquals(150f + 2f * LevelGeometry.TAG_PAD_DP, rect.width, 1e-4f)
+        assertEquals(800f, rect.right, 1e-4f)
+    }
+
+    @Test
+    fun `the grouped entry tag never collapses below the minimum width`() {
+        val plot = PlotRect(0f, 0f, 800f, 400f)
+        val rect = TagGeom.entryGroupTag(plot, 200f, textWidth = 0f, density, scale)
+        assertEquals(
+            LevelGeometry.MIN_ORDER_TAG_WIDTH_DP + 2f * LevelGeometry.TAG_PAD_DP,
+            rect.width,
+            1e-4f,
+        )
+    }
 }

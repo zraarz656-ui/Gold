@@ -5,11 +5,13 @@ package com.tradequest.chart
  * must hold (the current-price pill, the grid ticks and the crosshair tag) plus padding, so
  * the current-price pill always fits and nothing spills past the screen edge.
  *
- * Pure given a text measurer, so "the pill fits the gutter" is asserted in tests.
+ * The padding is [PAD_DP] on each side, so the gutter is the widest label plus 12dp — the
+ * same 12dp the current-price pill adds around its own text. Pure given a text measurer, so
+ * "the pill fits the gutter" is asserted in tests.
  */
 object ChartGutter {
 
-    /** Breathing room kept on each side of the widest label. */
+    /** Breathing room kept on each side of the widest label; 2 x 6dp = 12dp of padding. */
     const val PAD_DP = LevelGeometry.TAG_PAD_DP
 
     /** A floor so a very short price still leaves a usable gutter. */

@@ -114,94 +114,65 @@ object LevelHitTest {
 
     fun tolerancePx(density: Float): Float = DEFAULT_TOLERANCE_DP * density
 
-    /** The "+SL"/"+TP" handles a reference line (entry or pending trigger) offers. */
-    fun handlesOf(line: ChartOrderLine): List<OrderLineKind> =
-        if (line.kind == OrderLineKind.ENTRY || line.kind == OrderLineKind.PENDING) line.handles else emptyList()
-
     fun hit(
-        overlay: ChartOverlayState,
+        state: ChartState,
         geo: ChartGeometry,
         x: Float,
         y: Float,
-        density: Float,
-        labelScale: Float = 1f,
+        selectedEntryId: Long? = null,
         measure: TagTextMeasure = TagTextMeasure.Approximate,
-        groups: List<EntryGroup> = emptyList(),
     ): LevelHit? {
-        val tol = tolerancePx(density)
+        val density = state.density
+        val labelScale = state.labelScale
         val plot = geo.plot
+        val frame = orderTagFrameFor(state, geo, measure, selectedEntryId)
 
         // 0. A grouped entry tag sits over everything; tapping it opens the Positions tab.
-        groups.forEach { g ->
-            val band = TagGeom.entryGroupTag(plot, g.centerY, density, labelScale)
-            if (band.contains(x, y)) return LevelHit.EntryGroupTag
+        frame.order.forEachIndexed { i, ft ->
+            if (ft.target is TagTarget.Group && frame.tags[i].rect.contains(x, y)) return LevelHit.EntryGroupTag
         }
 
-        // 1. "+SL"/"+TP" handles, drawn at the plot's right edge inside the gutter.
-        overlay.lines.forEach { line ->
-            handlesOf(line).forEach { kind ->
-                if (inHandleBox(line, kind, geo, x, y, density, labelScale)) return LevelHit.Handle(line.id, kind)
+        // 1. "+SL"/"+TP" handles for the selected position only. An exact hit always wins;
+        //    the widened band is only a fallback so a near miss on a fat finger still lands.
+        frame.handles.forEachIndexed { i, rect ->
+            if (rect.contains(x, y)) return LevelHit.Handle(frame.handleTargets[i].id, frame.handleTargets[i].kind)
+        }
+        frame.handles.forEachIndexed { i, rect ->
+            val t = frame.handleTargets[i]
+            if (x in rect.left - HANDLE_X_PAD..rect.right + HANDLE_X_PAD && abs(y - rect.centerY) <= DEFAULT_TOLERANCE_DP * 1.5f) {
+                return LevelHit.Handle(t.id, t.kind)
             }
         }
 
-        // 2. The reference lines' own tags: a tap clears every level on the position/order.
-        overlay.lines
-            .filter { it.kind == OrderLineKind.ENTRY || it.kind == OrderLineKind.PENDING }
-            .firstOrNull { inTagBody(it, geo, x, y, density, labelScale, measure) }
-            ?.let { return LevelHit.EntryTag(it.id) }
+        // 2. A line's own tag: the "x" box clears an SL/TP; the body clears an entry's levels
+        //    or an entry tag opens the position. Grouped tags were handled above.
+        frame.order.forEachIndexed { i, ft ->
+            val t = ft.target
+            if (t !is TagTarget.Line) return@forEachIndexed
+            val rect = frame.tags[i].rect
+            if (!rect.contains(x, y)) return@forEachIndexed
+            when (t.kind) {
+                OrderLineKind.SL, OrderLineKind.TP -> {
+                    val boxLeft = rect.right - LevelGeometry.closeBox(density, labelScale)
+                    if (x >= boxLeft - 2f) return LevelHit.CloseBox(t.id, t.kind)
+                    return LevelHit.Line(t.id, t.kind)
+                }
+                else -> return LevelHit.EntryTag(t.id)
+            }
+        }
 
-        // 3. The "x" box on an SL/TP tag: tap to clear that level. (A pending trigger's own
-        //    tag clears every level instead; see branch 2.)
-        overlay.lines
-            .filter { it.kind == OrderLineKind.SL || it.kind == OrderLineKind.TP }
-            .firstOrNull { inCloseBox(it, geo, x, y, density, labelScale, measure) }
-            ?.let { return LevelHit.CloseBox(it.id, it.kind) }
-
-        overlay.lines
+        // 3. The line body over the plot, or its tag reaching into the gutter.
+        state.orderLines
             .filter { it.draggable && it.kind != OrderLineKind.ENTRY }
             .minByOrNull { abs(ChartMath.priceToY(it.drawPrice, geo.priceRange, plot) - y) }
             ?.let { line ->
                 val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
-                val near = abs(y - y0) <= tol
-                if (!near) return@let
-                // 4. The line body over the plot (the tag band is inside the plot too).
-                if (x in plot.left..plot.right) return LevelHit.Line(line.id, line.kind)
-                if (x > plot.right) return LevelHit.Line(line.id, line.kind)
+                if (abs(y - y0) <= tolerancePx(density)) {
+                    if (x in plot.left..plot.right) return LevelHit.Line(line.id, line.kind)
+                    if (x > plot.right) return LevelHit.Line(line.id, line.kind)
+                }
             }
 
         return null
-    }
-
-    private fun tagWidth(line: ChartOrderLine, density: Float, scale: Float, measure: TagTextMeasure): Float =
-        LevelGeometry.orderTagWidth(measure, line.tagText(), density, scale, line.needsCloseBox())
-
-    private fun inTagBody(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float, measure: TagTextMeasure): Boolean {
-        val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
-        val right = geo.plot.right
-        val left = right - tagWidth(line, density, scale, measure)
-        return x in left..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
-    }
-
-    private fun inHandleBox(line: ChartOrderLine, kind: OrderLineKind, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float): Boolean {
-        val handles = handlesOf(line)
-        val index = handles.indexOf(kind)
-        if (index < 0) return false
-        val hw = LevelGeometry.handleWidth(density, scale)
-        val total = handles.size * hw
-        val start = geo.plot.right - total
-        // Keep the x band tight so adjacent handles do not steal each other's taps; the
-        // height stays fat for fingers.
-        val left = start + index * hw - HANDLE_X_PAD
-        val right = start + (index + 1) * hw + HANDLE_X_PAD
-        val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
-        return x in left..right && abs(y - y0) <= DEFAULT_TOLERANCE_DP * 1.5f
-    }
-
-    private fun inCloseBox(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float, measure: TagTextMeasure): Boolean {
-        val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
-        val right = geo.plot.right
-        val left = right - tagWidth(line, density, scale, measure)
-        val boxLeft = right - LevelGeometry.closeBox(density, scale)
-        return x in maxOf(left, boxLeft - 2f)..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
     }
 }

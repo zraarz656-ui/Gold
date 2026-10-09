@@ -121,9 +121,14 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   (horizontally scrollable) and a "⋮" button opening the `ChartSettingsSheet` (theme +
   label size, persisted through `TradingViewModel.setTheme/setLabelSize`). The plot keeps
   at least 55% of a 20:9 screen (`ChartHeightTest`). The right price gutter is measured
-  from the widest label (`ChartGutter`) and the current-price pill fills it, so it always
-  fits and never spills past the screen edge. Entry tags within 20dp merge into one
-  "N pos  pnl" tag (`EntryGroups`), drawn and hit-tested from the same geometry.
+  from the widest price text (`ChartGutter`, widest label + 12dp); the current-price pill
+  fills that gutter, is opaque and is drawn last so nothing covers it, and never extends
+  past the screen edge. Every SL/TP/pending/entry line gets exactly one tag and no tag is
+  ever dropped: tags stack at least 20dp apart (`OrderTags`, shared by the renderer and the
+  hit test) and a tag displaced from its line draws a thin leader. A lone entry within 20dp
+  of another merges into a grouped "N pos  pnl" tag (`EntryGroups`); its width is measured
+  so the text is never clipped. Only the selected position (tap an entry tag to select,
+  tap again to clear) offers "+SL"/"+TP" handles, placed left of the whole tag column.
 
 ## Pushing (auth note, current environment)
 - The default `git push` prompts for a username and hangs, so always push non-interactively

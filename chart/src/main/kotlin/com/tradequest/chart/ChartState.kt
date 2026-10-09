@@ -45,6 +45,8 @@ data class ChartState(
     val labelSize: PriceLabelSize = PriceLabelSize.default,
     /** Device density, so the chart and the hit test share one dp-based geometry. */
     val density: Float = 1f,
+    /** The single position whose "+SL"/"+TP" handles are shown; null when none is selected. */
+    val selectedEntryId: Long? = null,
 ) {
     /** Lines to draw: the overlay's lines plus the live drag preview. */
     val orderLines: List<ChartOrderLine> get() = overlay.lines
