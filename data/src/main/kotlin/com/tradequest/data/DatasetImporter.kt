@@ -29,6 +29,16 @@ object DatasetImporter {
     const val NEWS_ASSET = "news.json"
     const val BATCH_SIZE = 5_000
 
+    /**
+     * Asset names to try for the candles, in order.
+     *
+     * The Android Gradle plugin transparently gunzips an asset whose name ends in `.gz`
+     * while merging it into the APK, so on-device the file is `xauusd_m1.csv` even though
+     * the source (and the test resources) are `xauusd_m1.csv.gz`. Resolving both names and
+     * sniffing the gzip magic keeps the same source working in tests and in the app.
+     */
+    private val CANDLE_CANDIDATES = listOf(CANDLE_ASSET, "xauusd_m1.csv")
+
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun import(
@@ -56,8 +66,8 @@ object DatasetImporter {
         assets: AssetSource,
         onProgress: (ImportProgress) -> Unit,
     ) {
-        val stream = gzipOrPlain(assets.open(CANDLE_ASSET))
-        val reader = BufferedReader(InputStreamReader(stream, Charsets.UTF_8))
+        val raw = openFirst(assets, CANDLE_CANDIDATES)
+        val reader = BufferedReader(InputStreamReader(gzipOrPlain(raw), Charsets.UTF_8))
         var batch = ArrayList<Candle1m>(BATCH_SIZE)
         var done = 0
         onProgress(ImportProgress(ImportProgress.Phase.CANDLES, 0, 0))
@@ -85,7 +95,7 @@ object DatasetImporter {
         assets: AssetSource,
         onProgress: (ImportProgress) -> Unit,
     ) {
-        val text = assets.open(NEWS_ASSET).use { it.readBytes().toString(Charsets.UTF_8) }
+        val text = openFirst(assets, listOf(NEWS_ASSET)).use { it.readBytes().toString(Charsets.UTF_8) }
         val file = json.decodeFromString(NewsFile.serializer(), text)
         val rows = file.events.map {
             NewsEntity(ts = it.ts, title = it.title, impact = parseImpact(it.impact))
@@ -120,6 +130,15 @@ object DatasetImporter {
         "HIGH" -> Impact.HIGH
         "MEDIUM", "MED" -> Impact.MEDIUM
         else -> Impact.LOW
+    }
+
+    /** Open the first asset name that exists; the last one is opened regardless so the
+     *  thrown error names a real path. */
+    private fun openFirst(assets: AssetSource, names: List<String>): InputStream {
+        for (name in names.dropLast(1)) {
+            runCatching { return assets.open(name) }
+        }
+        return assets.open(names.last())
     }
 
     private fun gzipOrPlain(stream: InputStream): InputStream {

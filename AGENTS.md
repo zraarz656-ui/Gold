@@ -29,6 +29,15 @@ export ANDROID_HOME=$HOME/android-sdk ANDROID_SDK_ROOT=$HOME/android-sdk
 ./gradlew :data:test :engine:test :app:assembleDebug
 ```
 
+## Gotchas
+
+- Assets named `*.gz` are transparently gunzipped by AGP when merged into the APK, so the
+  bundled `app/src/main/assets/xauusd_m1.csv.gz` is delivered as `assets/xauusd_m1.csv`.
+  `DatasetImporter` reads both names and sniffs the gzip magic; never assume the `.gz` name
+  survives to the device.
+- `gradlew clean` reinstalls nothing; the JDK/Android SDK are not part of the repo. In this
+  environment they were (re)installed to `~/tools/jdk-21.0.12.1+1` and `~/android-sdk`.
+
 ## Invariants
 
 - A candle may only be exposed when `ts <= ClockEngine.lastVisibleCandleTs(histNow)`

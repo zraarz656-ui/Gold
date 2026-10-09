@@ -4,4 +4,7 @@ build/
 node_modules/
 *.csv
 
+# Test fixtures must be committed even though they are CSV.
+!data/src/test/resources/**/*.csv
+
 local.properties
