@@ -117,3 +117,10 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   in the UI. Time travel only shifts `Season.offsetMs` backwards (advancing `histNow`); it
   touches no candle or trade data, is clamped so the last visible candle is never beyond
   the dataset's last candle, and then runs the normal catch-up.
+
+## Pushing (auth note, current environment)
+- `git push` with the default remote prompts for a username and hangs. The configured
+  `GH_PUSH_TOKEN` is invalid (GitHub API returns 401) and `GITHUB_TOKEN` authenticates the
+  read API but its git-push permissions are rejected (403 "Permission denied"). Until a
+  working push credential is provided, commit locally only and report the block. Do not
+  embed either token in `.git/config` (restore the plain HTTPS remote after probing).
