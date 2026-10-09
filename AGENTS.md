@@ -89,6 +89,14 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   the same Room transaction as `Season.lastProcessedTs`, so an interrupted run resumes
   exactly. Keep both in one `withTransaction`.
 - Orders are evaluated from the next candle after placement.
+- `OrderType.MARKET` carries no side, so a market `OrderRequest` must set `side`
+  explicitly; the order sheet's `initialType`/`initialSide` seed the form but never fix the
+  side, and both Buy and Sell actions are always rendered for a market order.
+- Catch-up runs on the minute tick as well as on open/resume (`TradingViewModel.observeTicker`).
+  The tick is what makes a market order fill when the next candle closes; without it fills
+  would only happen on reopen. Running catch-up rewrites the order tables, so every trade
+  mutation (`placeOrder`, `cancelOrder`, `closePosition`, `editStops`, `dragLine`,
+  `debugTimeTravel`) takes the same `catchUpMutex` to avoid a lost-write race.
 - Every closed trade carries `closedAt` = the timestamp of the candle whose processing
   closed it (`ClosedPosition.closeTs`): SL/TP/stop-out use the candle that triggered them,
   a manual close uses the season's last visible candle. `closedAt` is never wall-clock and

@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** High-level startup phase, so the UI can show import/catch-up progress. */
@@ -121,6 +122,9 @@ class TradingViewModel @Inject constructor(
     private var seasonId: Long = 0L
     private var offsetMs: Long = 0L
     private var ready = false
+
+    /** Serialises catch-up: the minute tick, resume and debug travel can all trigger it. */
+    private val catchUpMutex = kotlinx.coroutines.sync.Mutex()
 
     /** Historical-clock shift; displayed times = stored UTC + this, in the device zone. */
     private val _displayOffsetMs = MutableStateFlow(0L)
@@ -219,6 +223,10 @@ class TradingViewModel @Inject constructor(
     }
 
     private suspend fun runCatchUp(initial: Boolean) {
+        catchUpMutex.withLock { runCatchUpLocked(initial) }
+    }
+
+    private suspend fun runCatchUpLocked(initial: Boolean) {
         val season = seasons.active() ?: return
         seasonId = season.id
         val now = seasons.histNow(season)
@@ -245,10 +253,15 @@ class TradingViewModel @Inject constructor(
     private fun observeTicker() {
         viewModelScope.launch {
             candles.ticker.collect { visibleTs ->
-                _histNow.value = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
-                val latest = candles.latestClosed(_histNow.value)
+                val now = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
+                _histNow.value = now
+                // Fold every newly visible candle into the engine on the minute tick, so a
+                // market order fills when the next candle closes instead of only on reopen.
+                // runCatchUp is a no-op when there is nothing new to replay.
+                runCatchUp(initial = false)
+                val latest = candles.latestClosed(now)
                 if (latest != null) {
-                    controller.appendM1(latest, _histNow.value + offsetMs)
+                    controller.appendM1(latest, now + offsetMs)
                 }
                 refreshDerived()
                 _quote.value = quoteFrom(latest)
@@ -391,40 +404,53 @@ class TradingViewModel @Inject constructor(
         RiskCalculator.lotsForRisk(_strip.value.equity, _riskPercent.value, stopDistance)
 
     fun placeOrder(request: OrderRequest) {
-        viewModelScope.launch { trading.place(seasonId, request, _histNow.value); refreshDerived() }
+        viewModelScope.launch {
+            catchUpMutex.withLock { trading.place(seasonId, request, _histNow.value) }
+            refreshDerived()
+        }
     }
 
     fun cancelOrder(orderId: Long) {
-        viewModelScope.launch { trading.cancel(seasonId, orderId); refreshDerived() }
+        viewModelScope.launch {
+            catchUpMutex.withLock { trading.cancel(seasonId, orderId) }
+            refreshDerived()
+        }
     }
 
     fun closePosition(positionId: Long, lots: Double? = null) {
         viewModelScope.launch {
             // The live market's "now" is the last visible candle; that is the close time.
-            trading.closePosition(seasonId, positionId, _quote.value.bid, ClockEngine.lastVisibleCandleTs(_histNow.value), lots)
+            catchUpMutex.withLock {
+                trading.closePosition(seasonId, positionId, _quote.value.bid, ClockEngine.lastVisibleCandleTs(_histNow.value), lots)
+            }
             refreshDerived()
         }
     }
 
     fun editStops(orderId: Long, sl: Double?, tp: Double?) {
-        viewModelScope.launch { trading.editStops(seasonId, orderId, sl, tp); refreshDerived() }
+        viewModelScope.launch {
+            catchUpMutex.withLock { trading.editStops(seasonId, orderId, sl, tp) }
+            refreshDerived()
+        }
     }
 
     /** Called by the chart when an SL/TP or pending line is dragged. */
     fun dragLine(id: Long, kind: OrderLineKind, price: Double) {
         val rounded = FillEngine.roundPrice(price)
         viewModelScope.launch {
-            when (kind) {
-                OrderLineKind.SL -> {
-                    val o = trading.order(id) ?: return@launch
-                    trading.editStops(seasonId, id, rounded, o.tp)
+            catchUpMutex.withLock {
+                when (kind) {
+                    OrderLineKind.SL -> {
+                        val o = trading.order(id) ?: return@withLock
+                        trading.editStops(seasonId, id, rounded, o.tp)
+                    }
+                    OrderLineKind.TP -> {
+                        val o = trading.order(id) ?: return@withLock
+                        trading.editStops(seasonId, id, o.sl, rounded)
+                    }
+                    OrderLineKind.PENDING -> trading.movePendingPrice(seasonId, id, rounded)
+                    OrderLineKind.ENTRY -> {}
                 }
-                OrderLineKind.TP -> {
-                    val o = trading.order(id) ?: return@launch
-                    trading.editStops(seasonId, id, o.sl, rounded)
-                }
-                OrderLineKind.PENDING -> trading.movePendingPrice(seasonId, id, rounded)
-                OrderLineKind.ENTRY -> {}
             }
             refreshDerived()
         }

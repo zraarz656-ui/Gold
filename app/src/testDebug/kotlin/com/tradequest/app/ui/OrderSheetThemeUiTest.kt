@@ -11,6 +11,10 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import com.tradequest.app.ui.theme.TradeQuestTheme
 import com.tradequest.chart.ChartTheme
+import com.tradequest.data.OrderRequest
+import com.tradequest.engine.Side
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -62,5 +66,28 @@ class OrderSheetThemeUiTest {
             compose.onNodeWithText("2410.00").assertIsDisplayed()
             compose.onNodeWithText("3.00").assertIsDisplayed()
         }
+    }
+
+    /** Regression: the Sell action must exist and reach the caller with SHORT. */
+    @Test
+    fun marketSellButtonPlacesAShortOrder() {
+        var placed: OrderRequest? = null
+        compose.setContent {
+            TradeQuestTheme(ChartTheme.all.first()) {
+                OrderSheet(
+                    quote = Quote(bid = 2400.0, ask = 2400.5, spread = 0.5),
+                    equity = 10_000.0,
+                    riskPercent = 1.0,
+                    onDismiss = {},
+                    onPlace = { placed = it },
+                )
+            }
+        }
+
+        compose.onNodeWithText("Sell 2400.00").performClick()
+
+        assertNotNull("Sell must place an order", placed)
+        assertEquals(Side.SHORT, placed!!.side)
+        assertEquals(com.tradequest.engine.OrderType.MARKET, placed!!.type)
     }
 }

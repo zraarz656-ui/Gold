@@ -39,10 +39,13 @@ fun OrderSheet(
     equity: Double,
     riskPercent: Double,
     modifier: Modifier = Modifier,
+    initialType: OrderType = OrderType.MARKET,
+    initialSide: Side = Side.LONG,
     onDismiss: () -> Unit,
     onPlace: (OrderRequest) -> Unit,
 ) {
-    var type by remember { mutableStateOf(OrderType.MARKET) }
+    var type by remember { mutableStateOf(initialType) }
+    var marketSide by remember { mutableStateOf(initialSide) }
     var lots by remember { mutableStateOf("0.10") }
     var price by remember { mutableStateOf("") }
     var sl by remember { mutableStateOf("") }
@@ -51,9 +54,15 @@ fun OrderSheet(
     var useRisk by remember { mutableStateOf(false) }
     var riskText by remember { mutableStateOf("%.1f".format(riskPercent)) }
 
-    val side = if (type == OrderType.SELL_LIMIT || type == OrderType.SELL_STOP) Side.SHORT else Side.LONG
+    // Pending types carry their own side; a market order needs the explicit toggle.
+    val pendingSide = when (type) {
+        OrderType.SELL_LIMIT, OrderType.SELL_STOP -> Side.SHORT
+        OrderType.MARKET, OrderType.BUY_LIMIT, OrderType.BUY_STOP -> Side.LONG
+    }
+    val side = if (type == OrderType.MARKET) marketSide else pendingSide
     val entry = price.toDoubleOrNull() ?: when (type) {
-        OrderType.MARKET, OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
+        OrderType.MARKET -> if (side == Side.LONG) quote.ask else quote.bid
+        OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
         else -> quote.bid
     }
     val stopDistance = RiskCalculator.stopDistance(entry, sl.toDoubleOrNull())
@@ -61,6 +70,22 @@ fun OrderSheet(
         RiskCalculator.lotsForRisk(equity, riskText.toDoubleOrNull() ?: riskPercent, stopDistance)
     } else {
         null
+    }
+    val effectiveLots = calculatedLots ?: (lots.toDoubleOrNull() ?: 0.0)
+
+    fun place(t: OrderType, s: Side) {
+        onPlace(
+            OrderRequest(
+                type = t,
+                side = s,
+                lots = effectiveLots,
+                price = price.toDoubleOrNull(),
+                sl = sl.toDoubleOrNull(),
+                tp = tp.toDoubleOrNull(),
+                trailingDist = trail.toDoubleOrNull(),
+            ),
+        )
+        onDismiss()
     }
 
     val c = tradeColors
@@ -78,7 +103,12 @@ fun OrderSheet(
                 }
             }
 
-            if (type != OrderType.MARKET) {
+            if (type == OrderType.MARKET) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Chip("Buy", selected = marketSide == Side.LONG) { marketSide = Side.LONG }
+                    Chip("Sell", selected = marketSide == Side.SHORT) { marketSide = Side.SHORT }
+                }
+            } else {
                 TradeNumberField("Trigger price", price, onChange = { price = it })
             }
 
@@ -113,26 +143,29 @@ fun OrderSheet(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        val request = OrderRequest(
-                            type = type,
-                            lots = (calculatedLots ?: lots.toDoubleOrNull() ?: 0.0),
-                            price = price.toDoubleOrNull(),
-                            sl = sl.toDoubleOrNull(),
-                            tp = tp.toDoubleOrNull(),
-                            trailingDist = trail.toDoubleOrNull(),
-                        )
-                        onPlace(request)
-                        onDismiss()
-                    },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (side == Side.LONG) c.positive else c.negative,
-                        contentColor = c.onAccent,
-                    ),
-                ) { Text(if (side == Side.LONG) "Buy ${"%.2f".format(quote.ask)}" else "Sell ${"%.2f".format(quote.bid)}") }
-                Button(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
+                if (type == OrderType.MARKET) {
+                    // Both directions are always reachable, regardless of the toggle above.
+                    Button(
+                        onClick = { place(OrderType.MARKET, Side.LONG) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = c.positive, contentColor = c.onAccent),
+                    ) { Text("Buy ${"%.2f".format(quote.ask)}") }
+                    Button(
+                        onClick = { place(OrderType.MARKET, Side.SHORT) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = c.negative, contentColor = c.onAccent),
+                    ) { Text("Sell ${"%.2f".format(quote.bid)}") }
+                } else {
+                    Button(
+                        onClick = { place(type, pendingSide) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (side == Side.LONG) c.positive else c.negative,
+                            contentColor = c.onAccent,
+                        ),
+                    ) { Text("Place ${shortLabel(type)} ${"%.2f".format(entry)}") }
+                }
+                Button(onClick = { onDismiss() }, modifier = Modifier.weight(1f)) { Text("Cancel") }
             }
         }
     }
@@ -161,19 +194,19 @@ private fun shortLabel(t: OrderType): String = when (t) {
 
 /** A quick Buy/Sell row shown on the chart when the sheet is closed. */
 @Composable
-fun BuySellBar(quote: Quote, onOpen: (OrderType) -> Unit, modifier: Modifier = Modifier) {
+fun BuySellBar(quote: Quote, onOpen: (OrderType, Side) -> Unit, modifier: Modifier = Modifier) {
     val c = tradeColors
     Row(
         modifier.fillMaxWidth().background(c.surfaceVariant).padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Button(
-            onClick = { onOpen(OrderType.MARKET) },
+            onClick = { onOpen(OrderType.MARKET, Side.LONG) },
             modifier = Modifier.weight(1f),
             colors = ButtonDefaults.buttonColors(containerColor = c.positive, contentColor = c.onAccent),
         ) { Text("Buy ${"%.2f".format(quote.ask)}") }
         Button(
-            onClick = { onOpen(OrderType.MARKET) },
+            onClick = { onOpen(OrderType.MARKET, Side.SHORT) },
             modifier = Modifier.weight(1f),
             colors = ButtonDefaults.buttonColors(containerColor = c.negative, contentColor = c.onAccent),
         ) { Text("Sell ${"%.2f".format(quote.bid)}") }

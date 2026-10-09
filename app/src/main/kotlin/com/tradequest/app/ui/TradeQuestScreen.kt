@@ -57,6 +57,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
 
     var tab by remember { mutableStateOf(0) }
     var sheetFor by remember { mutableStateOf<OrderType?>(null) }
+    var sheetSide by remember { mutableStateOf(com.tradequest.engine.Side.LONG) }
     var crosshair by remember { mutableStateOf<CrosshairInfo?>(null) }
     var showResetConfirm by remember { mutableStateOf(false) }
     val controller = viewModel.controller
@@ -96,10 +97,12 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                         quote = quote,
                         equity = strip.equity,
                         riskPercent = risk,
+                        initialType = type,
+                        initialSide = sheetSide,
                         onDismiss = { sheetFor = null },
-                        onPlace = { viewModel.placeOrder(it.copy(type = type)) },
+                        onPlace = { viewModel.placeOrder(it) },
                     )
-                } ?: BuySellBar(quote, onOpen = { sheetFor = it })
+                } ?: BuySellBar(quote, onOpen = { type, side -> sheetFor = type; sheetSide = side })
             }
         } else {
             Box(Modifier.weight(1f)) {

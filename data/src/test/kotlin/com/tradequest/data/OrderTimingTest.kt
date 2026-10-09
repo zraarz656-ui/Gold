@@ -75,4 +75,41 @@ class OrderTimingTest {
         assertTrue(state.positions.isEmpty() || state.positions.all { it.openedAtTs > histNow })
         db.close()
     }
+
+    /**
+     * Regression: a market order placed at the live instant fills as soon as the *next*
+     * minute's candle is available. Nothing but a fresh catch-up (which the VM now runs on
+     * every minute tick) is needed, so the order never has to wait for an app reopen. This
+     * also proves a single pass at placement time correctly does not fill it.
+     */
+    @Test
+    fun catchUpOnTheNextMinuteFillsAMarketOrderWithoutReopening() = runTest {
+        val db = TestDb.open()
+        // Minute-aligned, like the real imported dataset.
+        val start = ts - ts % 60_000L
+        db.candleDao().insertAll(TestDb.candles(5, start))
+        val season = TestDb.seedSeason(db, start)
+        val histNow = start + 3 * 60_000L + 20_000L
+        val processor = CatchUpProcessor(db, batchSize = 2)
+
+        TradingRepository(db).place(
+            seasonId = season.id,
+            request = OrderRequest(type = OrderType.MARKET, lots = 0.05, side = Side.LONG),
+            histNow = histNow,
+        )
+
+        // Nothing new to fill against yet: the next candle has not started.
+        processor.run(season.id, histNow)
+        val before = AccountCheckpoint.decode(db.settingsDao().get(AccountCheckpoint.KEY), 0.0)
+        assertTrue(before.positions.isEmpty())
+        assertEquals(1, before.orders.size)
+
+        // The next minute closes: a second catch-up (the tick) fills the order in place.
+        val progressed = processor.run(season.id, histNow + 60_000L)
+        assertTrue("the next candle must be replayed", progressed.processedCandles > 0)
+        val after = AccountCheckpoint.decode(db.settingsDao().get(AccountCheckpoint.KEY), 0.0)
+        assertEquals("market order fills without reopening", 1, after.positions.size)
+        assertTrue(after.orders.isEmpty())
+        db.close()
+    }
 }

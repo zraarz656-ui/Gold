@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.Flow
 data class OrderRequest(
     val type: OrderType,
     val lots: Double,
+    /** Direction. Required for [OrderType.MARKET] because the type carries no side. */
+    val side: Side? = null,
     val price: Double? = null,
     val sl: Double? = null,
     val tp: Double? = null,
@@ -46,7 +48,7 @@ class TradingRepository(private val db: TradeQuestDatabase) {
         val orderId = state.nextPositionId
         val order = Order(
             id = orderId,
-            side = sideOf(request.type),
+            side = request.side ?: sideOf(request.type),
             type = request.type,
             lots = FillEngine.roundLots(request.lots),
             price = request.price?.let { FillEngine.roundPrice(it) },
