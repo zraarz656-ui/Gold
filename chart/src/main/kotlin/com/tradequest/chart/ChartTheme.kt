@@ -23,6 +23,9 @@ data class ChartTheme(
     val newsMedium: Color,
     val newsHigh: Color,
 ) {
+    /** True when the chart background is light, so overlays must use dark hairlines/text. */
+    val isLight: Boolean get() = TagStyle.luminance(background) > 0.4
+
     companion object {
         val DARK = ChartTheme(
             ThemeId.DARK, "Dark",

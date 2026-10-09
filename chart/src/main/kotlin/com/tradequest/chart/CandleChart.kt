@@ -121,7 +121,7 @@ fun CandleChart(
                     val levelHit: LevelHit? = LevelHitTest.hit(
                         controller.state.overlay,
                         geometryFor(controller.state, canvas, axisWidthPx, bottomAxisPx),
-                        down.position.x, down.position.y, density,
+                        down.position.x, down.position.y, controller.state.density, controller.state.labelScale,
                     )
                     var levelDragging = false
                     val panSamples = ArrayList<Pair<Long, Float>>(16)

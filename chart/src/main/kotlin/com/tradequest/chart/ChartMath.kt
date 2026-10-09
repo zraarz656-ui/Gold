@@ -61,6 +61,8 @@ data class ChartGeometry(
     val bottom: Float,
     val priceRange: PriceRange,
     val visible: IntRange,
+    /** Full canvas width in px; the far-right gutter tags anchor to it. */
+    val screenWidth: Float = 0f,
 ) {
     val width: Float get() = right - left
     val height: Float get() = bottom - top

@@ -51,7 +51,12 @@ class ChartController(
         this.plotWidthPx = plotWidthPx
         if (!widthInitialized) {
             widthInitialized = true
-            state = state.copy(viewport = state.viewport.copy(candleWidthPx = barWidthDp * densityPx))
+            state = state.copy(
+                viewport = state.viewport.copy(candleWidthPx = barWidthDp * densityPx),
+                density = densityPx,
+            )
+        } else {
+            state = state.copy(density = densityPx)
         }
     }
 
@@ -171,6 +176,11 @@ class ChartController(
 
     fun setTheme(theme: ChartTheme) {
         state = state.copy(theme = theme)
+    }
+
+    /** Apply the persisted price-label size; visual only, no effect on value scaling. */
+    fun setLabelSize(size: PriceLabelSize) {
+        state = state.copy(labelSize = size)
     }
 
     fun setDrawMode(on: Boolean) {

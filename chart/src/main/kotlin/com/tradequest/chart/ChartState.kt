@@ -41,10 +41,17 @@ data class ChartState(
     val marketClosed: Boolean = false,
     /** The line being dragged, drawn at the finger's price instead of its committed price. */
     val dragPreview: DragPreview? = null,
+    /** How large the price tags are drawn; persisted in DataStore. */
+    val labelSize: PriceLabelSize = PriceLabelSize.default,
+    /** Device density, so the chart and the hit test share one dp-based geometry. */
+    val density: Float = 1f,
 ) {
     /** Lines to draw: the overlay's lines plus the live drag preview. */
     val orderLines: List<ChartOrderLine> get() = overlay.lines
     val markers: List<ChartMarker> get() = overlay.markers
+
+    /** Convenience for the renderer and hit test: the label-size multiplier. */
+    val labelScale: Float get() = labelSize.scale
 
     val barCount: Int get() = bars.size
 }

@@ -150,13 +150,15 @@ object LevelRules {
         return if (notional == 0.0) 0.0 else 100.0 * levelPnl(ctx, price) / notional
     }
 
-    /** Tag text for an SL/TP line. SL carries the percent too: `SL -$12.00 (-0.5%)`, `TP +$25.00`. */
+    /** Tag text for an SL/TP line: names the price, then the money at stake. */
     fun levelTag(kind: OrderLineKind, ctx: LevelContext, price: Double): String {
         val money = signedMoney(levelPnl(ctx, price))
         val pct = "%+.1f%%".format(levelPercent(ctx, price))
+        val p = formatPrice(price)
         return when (kind) {
-            OrderLineKind.SL -> "SL $money ($pct)"
-            OrderLineKind.TP -> "TP $money"
+            // Price first so every order tag names its level, e.g. "SL 2378.50  -14.90".
+            OrderLineKind.SL -> "SL $p  $money ($pct)"
+            OrderLineKind.TP -> "TP $p  $money"
             else -> kind.name
         }
     }

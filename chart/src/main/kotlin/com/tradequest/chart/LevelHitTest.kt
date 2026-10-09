@@ -3,22 +3,41 @@ package com.tradequest.chart
 import kotlin.math.abs
 
 /**
- * Shared geometry for the level tags and handles. The renderer and the hit test both read
- * these, so what you see is exactly what you can grab.
+ * Shared geometry for the level tags and handles, in dp so it scales with the device and
+ * the price-label-size setting. The renderer and the hit test both read these, so what you
+ * see is exactly what you can grab.
  */
 object LevelGeometry {
-    /** Tag height; also the line's touch target half-height. */
-    const val TAG_HEIGHT = 18f
+    /** Order-tag width; the tag grows left over the plot from the plot's right edge. */
+    const val ORDER_TAG_WIDTH_DP = 168f
 
-    /** Tag width (excluding the close box's own overflow). */
-    const val TAG_WIDTH = 132f
+    /** Tag height; also the line's touch target half-height. */
+    const val TAG_HEIGHT_DP = 24f
 
     /** The tappable "x" box at the tag's right edge. */
-    const val CLOSE_BOX = 22f
+    const val CLOSE_BOX_DP = 24f
 
-    /** The "+SL"/"+TP" handle, in the right gutter. */
-    const val HANDLE_WIDTH = 34f
-    const val HANDLE_HEIGHT = 18f
+    /** The current-price / crosshair tag: fits "1234.56" at 15sp bold. */
+    const val PRICE_TAG_WIDTH_DP = 104f
+    const val PRICE_TAG_HEIGHT_DP = 28f
+
+    /** The "+SL"/"+TP" handle, at the plot's right edge. */
+    const val HANDLE_WIDTH_DP = 40f
+    const val HANDLE_HEIGHT_DP = 22f
+
+    /** Inner padding of a tag, from the fill to the text. */
+    const val TAG_PAD_DP = 6f
+
+    /** Corner radius of every tag pill. */
+    const val TAG_RADIUS_DP = 6f
+
+    fun orderTagWidth(density: Float, scale: Float): Float = ORDER_TAG_WIDTH_DP * density * scale
+    fun tagHeight(density: Float, scale: Float): Float = TAG_HEIGHT_DP * density * scale
+    fun closeBox(density: Float, scale: Float): Float = CLOSE_BOX_DP * density * scale
+    fun priceTagWidth(density: Float, scale: Float): Float = PRICE_TAG_WIDTH_DP * density * scale
+    fun priceTagHeight(density: Float, scale: Float): Float = PRICE_TAG_HEIGHT_DP * density * scale
+    fun handleWidth(density: Float, scale: Float): Float = HANDLE_WIDTH_DP * density * scale
+    fun handleHeight(density: Float, scale: Float): Float = HANDLE_HEIGHT_DP * density * scale
 }
 
 /** What the finger landed on, if anything. */
@@ -63,6 +82,7 @@ object LevelHitTest {
         x: Float,
         y: Float,
         density: Float,
+        labelScale: Float = 1f,
     ): LevelHit? {
         val tol = tolerancePx(density)
         val plot = geo.plot
@@ -70,21 +90,21 @@ object LevelHitTest {
         // 1. "+SL"/"+TP" handles, drawn at the plot's right edge inside the gutter.
         overlay.lines.forEach { line ->
             handlesOf(line).forEach { kind ->
-                if (inHandleBox(line, kind, geo, x, y)) return LevelHit.Handle(line.id, kind)
+                if (inHandleBox(line, kind, geo, x, y, density, labelScale)) return LevelHit.Handle(line.id, kind)
             }
         }
 
-        // 2. The reference lines' own gutter tags: a tap clears every level on the position/order.
+        // 2. The reference lines' own tags: a tap clears every level on the position/order.
         overlay.lines
             .filter { it.kind == OrderLineKind.ENTRY || it.kind == OrderLineKind.PENDING }
-            .firstOrNull { x > plot.right && inTagBody(it, geo, x, y) }
+            .firstOrNull { inTagBody(it, geo, x, y, density, labelScale) }
             ?.let { return LevelHit.EntryTag(it.id) }
 
         // 3. The "x" box on an SL/TP tag: tap to clear that level. (A pending trigger's own
         //    tag clears every level instead; see branch 2.)
         overlay.lines
             .filter { it.kind == OrderLineKind.SL || it.kind == OrderLineKind.TP }
-            .firstOrNull { x > plot.right && inCloseBox(it, geo, x, y) }
+            .firstOrNull { inCloseBox(it, geo, x, y, density, labelScale) }
             ?.let { return LevelHit.CloseBox(it.id, it.kind) }
 
         overlay.lines
@@ -94,7 +114,7 @@ object LevelHitTest {
                 val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, plot)
                 val near = abs(y - y0) <= tol
                 if (!near) return@let
-                // 4. The line body over the plot, or anywhere else on the tag.
+                // 4. The line body over the plot (the tag band is inside the plot too).
                 if (x in plot.left..plot.right) return LevelHit.Line(line.id, line.kind)
                 if (x > plot.right) return LevelHit.Line(line.id, line.kind)
             }
@@ -102,31 +122,32 @@ object LevelHitTest {
         return null
     }
 
-    private fun inTagBody(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float): Boolean {
+    private fun inTagBody(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float): Boolean {
         val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
-        val left = geo.plot.right + 1f
-        val right = left + LevelGeometry.TAG_WIDTH
-        return x in left..right && abs(y - y0) <= LevelGeometry.TAG_HEIGHT
+        val right = geo.plot.right
+        val left = right - LevelGeometry.orderTagWidth(density, scale)
+        return x in left..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
     }
 
-    private fun inHandleBox(line: ChartOrderLine, kind: OrderLineKind, geo: ChartGeometry, x: Float, y: Float): Boolean {
+    private fun inHandleBox(line: ChartOrderLine, kind: OrderLineKind, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float): Boolean {
         val handles = handlesOf(line)
         val index = handles.indexOf(kind)
         if (index < 0) return false
-        val total = handles.size * LevelGeometry.HANDLE_WIDTH
+        val hw = LevelGeometry.handleWidth(density, scale)
+        val total = handles.size * hw
         val start = geo.plot.right - total
         // Keep the x band tight so adjacent handles do not steal each other's taps; the
         // height stays fat for fingers.
-        val left = start + index * LevelGeometry.HANDLE_WIDTH - HANDLE_X_PAD
-        val right = start + (index + 1) * LevelGeometry.HANDLE_WIDTH + HANDLE_X_PAD
+        val left = start + index * hw - HANDLE_X_PAD
+        val right = start + (index + 1) * hw + HANDLE_X_PAD
         val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
         return x in left..right && abs(y - y0) <= DEFAULT_TOLERANCE_DP * 1.5f
     }
 
-    private fun inCloseBox(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float): Boolean {
+    private fun inCloseBox(line: ChartOrderLine, geo: ChartGeometry, x: Float, y: Float, density: Float, scale: Float): Boolean {
         val y0 = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
-        val left = geo.plot.right + 1f + LevelGeometry.TAG_WIDTH - LevelGeometry.CLOSE_BOX
-        val right = geo.plot.right + 1f + LevelGeometry.TAG_WIDTH
-        return x in left..right && abs(y - y0) <= LevelGeometry.TAG_HEIGHT
+        val right = geo.plot.right
+        val left = right - LevelGeometry.closeBox(density, scale)
+        return x in left..right && abs(y - y0) <= LevelGeometry.tagHeight(density, scale)
     }
 }

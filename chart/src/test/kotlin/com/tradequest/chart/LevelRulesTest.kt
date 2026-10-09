@@ -88,12 +88,13 @@ class LevelRulesTest {
     }
 
     @Test
-    fun `tag text shows money and percent for SL and money only for TP`() {
+    fun `tag text names the price then the money at stake`() {
         val sl = ctx(OrderLineKind.SL, Side.LONG, lots = 1.0)
         val slTag = LevelRules.levelTag(OrderLineKind.SL, sl, 2390.0)
-        assertTrue(slTag.startsWith("SL -$1000.00"), slTag)
+        assertTrue(slTag.startsWith("SL 2390.00"), slTag)
+        assertTrue(slTag.contains("-$1000.00"), slTag)
         assertTrue(slTag.contains("%"), slTag)
         val tpTag = LevelRules.levelTag(OrderLineKind.TP, ctx(OrderLineKind.TP, Side.LONG), 2410.0)
-        assertTrue(tpTag == "TP +$1000.00", tpTag)
+        assertTrue(tpTag == "TP 2410.00  +$1000.00", tpTag)
     }
 }

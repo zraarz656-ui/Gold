@@ -8,6 +8,7 @@ import com.tradequest.chart.ChartOrderLine
 import com.tradequest.chart.ChartOverlayState
 import com.tradequest.chart.LevelOutcome
 import com.tradequest.chart.OrderLineKind
+import com.tradequest.chart.PriceLabelSize
 import com.tradequest.data.AccountCheckpoint
 import com.tradequest.data.AssetSource
 import com.tradequest.data.CandleRepository
@@ -156,6 +157,7 @@ class TradingViewModel @Inject constructor(
     private suspend fun bootstrap() {
         // Apply the saved theme before anything heavy, so the UI colours are right early.
         controller.setTheme(themeForId(preferences.themeIdOnce()))
+        controller.setLabelSize(PriceLabelSize.fromId(preferences.labelSizeIdOnce()))
         val alreadyImported = settings.get(SettingsRepository.IMPORT_DONE, "0") == "1"
         if (!alreadyImported) {
             DatasetImporter.import(db, assets) { p -> reportImport(p) }
@@ -459,6 +461,12 @@ class TradingViewModel @Inject constructor(
     fun setTheme(theme: com.tradequest.chart.ChartTheme) {
         controller.setTheme(theme)
         viewModelScope.launch { preferences.setThemeId(theme.id.name) }
+    }
+
+    /** Applies the price-label size immediately and persists it for the next launch. */
+    fun setLabelSize(size: PriceLabelSize) {
+        controller.setLabelSize(size)
+        viewModelScope.launch { preferences.setLabelSizeId(size.name) }
     }
 
     fun setRiskPercent(percent: Double) {

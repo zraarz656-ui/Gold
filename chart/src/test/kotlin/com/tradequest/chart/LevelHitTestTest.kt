@@ -41,26 +41,29 @@ class LevelHitTestTest {
     fun `an empty entry offers its missing handles on the right gutter`() {
         val ov = overlay(entry(listOf(OrderLineKind.SL, OrderLineKind.TP)))
         val y = ChartMath.priceToY(2400.0, range, geo.plot)
+        val hw = LevelGeometry.handleWidth(density, 1f)
         // Two handles sit side by side against the plot's right edge; the left-most is SL.
-        val slX = geo.right - 2 * LevelGeometry.HANDLE_WIDTH + LevelGeometry.HANDLE_WIDTH / 2f
-        val tpX = geo.right - LevelGeometry.HANDLE_WIDTH / 2f
+        val slX = geo.right - 2 * hw + hw / 2f
+        val tpX = geo.right - hw / 2f
         assertEquals(LevelHit.Handle(1, OrderLineKind.SL), LevelHitTest.hit(ov, geo, slX, y, density))
         assertEquals(LevelHit.Handle(1, OrderLineKind.TP), LevelHitTest.hit(ov, geo, tpX, y, density))
     }
 
     @Test
-    fun `a covered entry offers no handles`() {
+    fun `an entry with levels set offers no plus-SL plus-TP handles`() {
         val ov = overlay(entry(emptyList()))
         val y = ChartMath.priceToY(2400.0, range, geo.plot)
+        // Tapping the entry tag clears the position's levels; it is never a handle.
         val hit = LevelHitTest.hit(ov, geo, geo.right - 20f, y, density)
-        assertEquals(null, hit)
+        assertTrue(hit !is LevelHit.Handle, "expected no handle, got $hit")
     }
 
     @Test
     fun `a hit on the tag close box clears the level`() {
         val ov = overlay(level(OrderLineKind.TP, 2410.0))
         val y = ChartMath.priceToY(2410.0, range, geo.plot)
-        val closeX = geo.plot.right + 1f + LevelGeometry.TAG_WIDTH - LevelGeometry.CLOSE_BOX / 2f
+        // The "x" box occupies the tag's right edge, inside the plot.
+        val closeX = geo.right - LevelGeometry.closeBox(density, 1f) / 2f
         val hit = LevelHitTest.hit(ov, geo, closeX, y, density)
         assertEquals(LevelHit.CloseBox(1, OrderLineKind.TP), hit)
     }
@@ -69,7 +72,8 @@ class LevelHitTestTest {
     fun `a hit on the tag body drags the level`() {
         val ov = overlay(level(OrderLineKind.TP, 2410.0))
         val y = ChartMath.priceToY(2410.0, range, geo.plot)
-        val tagX = geo.plot.right + 30f
+        // The tag grows left over the chart from the plot's right edge.
+        val tagX = geo.right - 40f
         val hit = LevelHitTest.hit(ov, geo, tagX, y, density)
         assertEquals(LevelHit.Line(1, OrderLineKind.TP), hit)
     }
@@ -78,7 +82,8 @@ class LevelHitTestTest {
     fun `a tap on the entry tag clears the position's levels`() {
         val ov = overlay(entry(listOf(OrderLineKind.SL)), level(OrderLineKind.TP, 2410.0))
         val y = ChartMath.priceToY(2400.0, range, geo.plot)
-        val tagX = geo.plot.right + 30f
+        // Left of the "+SL" handle band, but inside the entry tag body.
+        val tagX = geo.right - 100f
         assertEquals(LevelHit.EntryTag(1), LevelHitTest.hit(ov, geo, tagX, y, density))
     }
 

@@ -34,6 +34,7 @@ import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.chart.ChartPanel
 import com.tradequest.chart.ChartTheme
 import com.tradequest.chart.CrosshairInfo
+import com.tradequest.chart.PriceLabelSize
 import com.tradequest.chart.TIMEFRAMES
 import com.tradequest.chart.label
 import com.tradequest.data.OrderStatus
@@ -79,7 +80,14 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                 TIMEFRAMES.forEach { tf -> Chip(tf.label(), timeframe == tf) { viewModel.setTimeframe(tf) } }
             }
         }
-        ThemePicker(current = controller.state.theme, onPick = { viewModel.setTheme(it) })
+        ThemePicker(
+            current = controller.state.theme,
+            onPick = { viewModel.setTheme(it) },
+        )
+        LabelSizePicker(
+            current = controller.state.labelSize,
+            onPick = { viewModel.setLabelSize(it) },
+        )
 
         if (tab == 0) {
             Box(Modifier.weight(1f)) {
@@ -216,6 +224,26 @@ private fun ThemePicker(current: ChartTheme, onPick: (ChartTheme) -> Unit) {
     ) {
         ChartTheme.all.forEach { t ->
             Chip(t.name, t.id == current.id) { onPick(t) }
+        }
+    }
+}
+
+/** A compact price-label-size switcher; applies and persists via the VM. */
+@Composable
+private fun LabelSizePicker(current: PriceLabelSize, onPick: (PriceLabelSize) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Labels",
+            color = tradeColors.onSurfaceVariant,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(end = 2.dp),
+        )
+        PriceLabelSize.entries.forEach { s ->
+            Chip(s.label, s == current) { onPick(s) }
         }
     }
 }
