@@ -120,7 +120,7 @@ val OledColors = TradeQuestColors(
     surfaceVariant = Color(0xFF101418),
     onSurface = Color(0xFFECEFF1),
     onSurfaceVariant = Color(0xFFA7B4C2),
-    outline = Color(0xFF4A5560),
+    outline = Color(0xFF607D8B),
     accent = Color(0xFF40C4FF),
     onAccent = Color(0xFF0B0E12),
     positive = Color(0xFF00E676),
@@ -149,6 +149,10 @@ fun colorsFor(theme: ChartTheme): TradeQuestColors = when (theme.id) {
     ThemeId.OLED -> OledColors
     ThemeId.COLORBLIND -> ColorBlindColors
 }
+
+/** The persisted representation of a theme; defaults to Dark for unknown values. */
+fun themeForId(id: String): ChartTheme =
+    ChartTheme.all.firstOrNull { it.id.name.equals(id, ignoreCase = true) } ?: ChartTheme.DARK
 
 val LocalTradeQuestColors = staticCompositionLocalOf { DarkColors }
 

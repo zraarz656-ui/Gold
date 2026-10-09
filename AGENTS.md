@@ -13,8 +13,8 @@ bundled 1-minute history using a whole-week time offset.
   theme, `orderLines`, `markers`, `marketClosed`); `ChartRenderer` draws it. `ChartOverlays.kt`
   defines `ChartOrderLine` / `ChartMarker`.
 - `data` — Room database, DAOs, repositories (`CandleRepository`, `SeasonRepository`,
-  `TradingRepository`, `SettingsRepository`), `DatasetImporter`, `CatchUpProcessor`,
-  `AccountCheckpoint`. Tests are Robolectric + in-memory Room.
+  `TradingRepository`, `SettingsRepository`), `PreferencesStore` (DataStore),
+  `DatasetImporter`, `CatchUpProcessor`, `AccountCheckpoint`. Tests are Robolectric + in-memory Room.
 - `app` — Hilt/Compose app: `TradingViewModel`, screens, `LiveClock` (minute ticker),
   `CatchUpWorker`/`CatchUpScheduler`/`Notifier`.
 
@@ -26,9 +26,11 @@ follows the chart theme (dark, light, OLED, colour-blind). Screens must **not** 
 `Color(...)`; use the tokens (`surface`, `surfaceVariant`, `onSurface`, `onSurfaceVariant`,
 `outline`, `accent`, `onAccent`, `positive`, `negative`, `warning`). Text inputs must use
 `TradeNumberField`/`tradeFieldColors()` (explicit `OutlinedTextFieldDefaults.colors`) so
-input text, labels and placeholders stay readable. `ThemeContrastTest` asserts >= 4.5:1 for
-every token pair in every theme; `OrderSheetThemeUiTest` (debug-only) types into the sheet
-in all four themes.
+input text, labels and placeholders stay readable. The selected theme is persisted in
+DataStore under `theme_id` (`PreferencesStore`) and applied before the first frame via
+`TradingViewModel.bootstrap`; `themeForId` maps the id back to a `ChartTheme`, defaulting
+to Dark. `ThemeContrastTest` asserts >= 4.5:1 for text tokens and >= 3:1 for `outline`;
+`OrderSheetThemeUiTest` (debug-only) types into the sheet in all four themes.
 
 ## Build & test
 

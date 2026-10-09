@@ -17,6 +17,7 @@ import com.tradequest.data.EquitySnapshotEntity
 import com.tradequest.data.ImportProgress
 import com.tradequest.data.OrderRequest
 import com.tradequest.data.OrderStatus
+import com.tradequest.data.PreferencesStore
 import com.tradequest.data.RiskCalculator
 import com.tradequest.data.Season
 import com.tradequest.data.SeasonRepository
@@ -24,6 +25,7 @@ import com.tradequest.data.SettingsRepository
 import com.tradequest.data.TradeOrder
 import com.tradequest.data.TradeQuestDatabase
 import com.tradequest.data.TradingRepository
+import com.tradequest.app.ui.theme.themeForId
 import com.tradequest.engine.AccountState
 import com.tradequest.engine.Candle
 import com.tradequest.engine.ClosedPosition
@@ -82,6 +84,7 @@ class TradingViewModel @Inject constructor(
     private val trading: TradingRepository,
     private val candles: CandleRepository,
     private val settings: SettingsRepository,
+    private val preferences: PreferencesStore,
     private val catchUp: CatchUpProcessor,
     assetSource: AssetSource,
 ) : ViewModel() {
@@ -145,6 +148,8 @@ class TradingViewModel @Inject constructor(
     }
 
     private suspend fun bootstrap() {
+        // Apply the saved theme before anything heavy, so the UI colours are right early.
+        controller.setTheme(themeForId(preferences.themeIdOnce()))
         val alreadyImported = settings.get(SettingsRepository.IMPORT_DONE, "0") == "1"
         if (!alreadyImported) {
             DatasetImporter.import(db, assets) { p -> reportImport(p) }
@@ -371,7 +376,11 @@ class TradingViewModel @Inject constructor(
 
     fun setTimeframe(tf: Timeframe) = controller.setTimeframe(tf)
 
-    fun setTheme(theme: com.tradequest.chart.ChartTheme) = controller.setTheme(theme)
+    /** Applies the theme immediately and persists the choice for the next launch. */
+    fun setTheme(theme: com.tradequest.chart.ChartTheme) {
+        controller.setTheme(theme)
+        viewModelScope.launch { preferences.setThemeId(theme.id.name) }
+    }
 
     fun setRiskPercent(percent: Double) {
         _riskPercent.value = percent.coerceIn(0.1, 10.0)

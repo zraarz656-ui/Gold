@@ -9,6 +9,7 @@ import com.tradequest.data.CatchUpProcessor
 import com.tradequest.data.DailyStatsDao
 import com.tradequest.data.EquitySnapshotDao
 import com.tradequest.data.NewsDao
+import com.tradequest.data.PreferencesStore
 import com.tradequest.data.SeasonRepository
 import com.tradequest.data.SettingsDao
 import com.tradequest.data.SettingsRepository
@@ -57,6 +58,10 @@ object AppModule {
     @Provides
     @Singleton
     fun settingsRepository(db: TradeQuestDatabase): SettingsRepository = SettingsRepository(db)
+
+    @Provides
+    @Singleton
+    fun preferencesStore(@ApplicationContext context: Context): PreferencesStore = PreferencesStore(context)
 
     @Provides
     @Singleton

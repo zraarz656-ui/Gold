@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tradequest.app.BuildConfig
 import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.chart.ChartPanel
+import com.tradequest.chart.ChartTheme
 import com.tradequest.chart.CrosshairInfo
 import com.tradequest.chart.TIMEFRAMES
 import com.tradequest.chart.label
@@ -72,6 +73,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                 TIMEFRAMES.forEach { tf -> Chip(tf.label(), timeframe == tf) { viewModel.setTimeframe(tf) } }
             }
         }
+        ThemePicker(current = controller.state.theme, onPick = { viewModel.setTheme(it) })
 
         if (tab == 0) {
             Box(Modifier.weight(1f)) {
@@ -191,4 +193,17 @@ private fun ClosedFooter() {
         color = c.onSurfaceVariant,
         fontSize = 12.sp,
     )
+}
+
+/** A compact theme switcher; picking a theme applies it and persists it via the VM. */
+@Composable
+private fun ThemePicker(current: ChartTheme, onPick: (ChartTheme) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ChartTheme.all.forEach { t ->
+            Chip(t.name, t.id == current.id) { onPick(t) }
+        }
+    }
 }
