@@ -40,10 +40,10 @@ fun PositionsScreen(
     onClose: (Long, Double?) -> Unit,
     onCancel: (Long) -> Unit,
     onEditStops: (Long, Double?, Double?) -> Unit,
+    onResetSeason: (() -> Unit)? = null,
 ) {
     val open = orders.filter { it.status == OrderStatus.OPEN }
     val pending = orders.filter { it.status == OrderStatus.PENDING }
-
     LazyColumn(
         modifier.fillMaxSize().background(Color(0xFF12161C)).padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -62,6 +62,13 @@ fun PositionsScreen(
         if (closed.isEmpty()) item { EmptyRow("No closed trades") }
         items(closed, key = { "c-${it.id}" }) { o ->
             ClosedCard(o, displayOffsetMs)
+        }
+        if (onResetSeason != null) {
+            item {
+                OutlinedButton(onClick = onResetSeason, modifier = Modifier.fillMaxWidth()) {
+                    Text("Reset season (debug)")
+                }
+            }
         }
     }
 }

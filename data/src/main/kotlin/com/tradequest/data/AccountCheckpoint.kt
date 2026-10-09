@@ -176,7 +176,7 @@ object TradeProjection {
         trailingDist = existing?.trailingDist,
         status = OrderStatus.CLOSED,
         openedAt = existing?.openedAt,
-        closedAt = null,
+        closedAt = c.closeTs,
         closePrice = c.exitPrice,
         pnl = c.netPnl,
         fees = c.commission,

@@ -83,6 +83,34 @@ class CatchUpProcessorTest {
         assertEquals(expected, actual)
     }
 
+    @Test
+    fun closedTradesAlwaysCarryACandleTimestampAndAreDeterministic() = runTest {
+        // An SL hair-trigger forces a close during catch-up.
+        val onePass = runClosingScenario(batchSize = 1_000)
+        val interrupted = runClosingScenario(batchSize = 1)
+
+        assertTrue("scenario should produce at least one closed trade", onePass.isNotEmpty())
+        assertTrue("every closed trade must have closedAt set", onePass.all { it.closedAt != null })
+        assertEquals(onePass.map { it.id to it.closedAt }, interrupted.map { it.id to it.closedAt })
+    }
+
+    private suspend fun runClosingScenario(batchSize: Int): List<TradeOrder> {
+        val db = TestDb.open()
+        db.candleDao().insertAll(TestDb.candles(30, start))
+        val season = TestDb.seedSeason(db, start)
+        // Buy at market on the first candle with a stop just at the entry: the very next
+        // candle dips below it and closes the position on that candle's timestamp.
+        TradingRepository(db).place(
+            seasonId = season.id,
+            request = OrderRequest(type = OrderType.MARKET, lots = 0.1, sl = 2400.0),
+            histNow = start - 60_000L,
+        )
+        CatchUpProcessor(db, batchSize = batchSize).run(season.id, start + 60 * 60_000L)
+        val closed = db.tradeOrderDao().closed(season.id)
+        db.close()
+        return closed
+    }
+
     private suspend fun stateOf(db: TradeQuestDatabase, seasonId: Long): Snapshot = Snapshot(
         lastProcessedTs = db.seasonDao().byId(seasonId)!!.lastProcessedTs,
         checkpoint = db.settingsDao().get(AccountCheckpoint.KEY) ?: "",

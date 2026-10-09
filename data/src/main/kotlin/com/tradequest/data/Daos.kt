@@ -87,6 +87,9 @@ interface SeasonDao {
 
     @Query("SELECT COUNT(*) FROM season")
     suspend fun count(): Long
+
+    @Query("DELETE FROM season")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -128,9 +131,12 @@ interface TradeOrderDao {
     @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED' ORDER BY closedAt ASC, id ASC")
     suspend fun closed(seasonId: Long): List<TradeOrder>
 
+    @Query("DELETE FROM trade_order")
+    suspend fun deleteAll()
+
     @Query(
         "SELECT * FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED' " +
-            "AND (closedAt IS NULL OR closedAt >= :sinceTs) ORDER BY closedAt ASC, id ASC",
+            "AND closedAt >= :sinceTs ORDER BY closedAt ASC, id ASC",
     )
     fun closedFlow(seasonId: Long, sinceTs: Long): Flow<List<TradeOrder>>
 }
@@ -145,6 +151,9 @@ interface DailyStatsDao {
 
     @Query("SELECT * FROM daily_stats WHERE seasonId = :seasonId ORDER BY dayKey ASC")
     suspend fun bySeason(seasonId: Long): List<DailyStats>
+
+    @Query("DELETE FROM daily_stats")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -157,6 +166,9 @@ interface EquitySnapshotDao {
 
     @Query("SELECT * FROM equity_snapshot WHERE seasonId = :seasonId ORDER BY ts DESC LIMIT 1")
     suspend fun latest(seasonId: Long): EquitySnapshotEntity?
+
+    @Query("DELETE FROM equity_snapshot")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -172,4 +184,7 @@ interface SettingsDao {
 
     @Query("SELECT * FROM settings")
     suspend fun all(): List<SettingEntity>
+
+    @Query("DELETE FROM settings WHERE key = :key")
+    suspend fun delete(key: String)
 }

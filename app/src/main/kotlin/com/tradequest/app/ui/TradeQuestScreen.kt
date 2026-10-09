@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +55,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     var tab by remember { mutableStateOf(0) }
     var sheetFor by remember { mutableStateOf<OrderType?>(null) }
     var crosshair by remember { mutableStateOf<CrosshairInfo?>(null) }
+    var showResetConfirm by remember { mutableStateOf(false) }
     val controller = viewModel.controller
 
     Column(modifier.fillMaxSize().background(Color(0xFF12161C))) {
@@ -103,9 +106,25 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                     onClose = { id, lots -> viewModel.closePosition(id, lots) },
                     onCancel = { viewModel.cancelOrder(it) },
                     onEditStops = { id, sl, tp -> viewModel.editStops(id, sl, tp) },
+                    onResetSeason = { showResetConfirm = true },
                 )
             }
         }
+    }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("Reset season?") },
+            text = { Text("This deletes all trades, stats and equity history, then starts a fresh $10,000 season. Imported market data is kept.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetConfirm = false
+                    viewModel.debugResetSeason()
+                }) { Text("Reset") }
+            },
+            dismissButton = { TextButton(onClick = { showResetConfirm = false }) { Text("Cancel") } },
+        )
     }
 }
 

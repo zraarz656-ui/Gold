@@ -35,7 +35,7 @@ class TradingRepository(private val db: TradeQuestDatabase) {
 
     fun allOrders(seasonId: Long): Flow<List<TradeOrder>> = db.tradeOrderDao().bySeasonFlow(seasonId)
 
-    /** Closed trades whose stored `closedAt` is at or after [sinceTs] (or never set). */
+    /** Closed trades whose stored `closedAt` is at or after [sinceTs]. */
     fun closedSince(seasonId: Long, sinceTs: Long): Flow<List<TradeOrder>> =
         db.tradeOrderDao().closedFlow(seasonId, sinceTs)
 
@@ -96,10 +96,17 @@ class TradingRepository(private val db: TradeQuestDatabase) {
     }
 
     /** Close all or part of an open position at [exitPrice] (the current bid). */
-    suspend fun closePosition(seasonId: Long, positionId: Long, exitPrice: Double, lots: Double? = null): ClosedPosition? {
+    suspend fun closePosition(
+        seasonId: Long,
+        positionId: Long,
+        exitPrice: Double,
+        closeTs: Long,
+        lots: Double? = null,
+    ): ClosedPosition? {
         val state = loadState(seasonId)
         val existing = TradeProjection.open(seasonId, state).associateBy { it.id }
-        val result = FillEngine.closePosition(state, positionId, exitPrice, lots ?: Double.MAX_VALUE) ?: return null
+        val result = FillEngine.closePosition(state, positionId, exitPrice, closeTs, lots ?: Double.MAX_VALUE)
+            ?: return null
         val (updated, closed) = result
         val closedRow = TradeProjection.closedRows(seasonId, listOf(closed), existing::get).first()
         db.withTransaction {

@@ -359,4 +359,47 @@ class FillEngineTest {
         assertNotNull(r.equityAtClose)
         assertEquals(10_050.0, r.equityAtClose, 1e-9) // +0.5 * 100 oz
     }
+
+    // --------------------------------------------------------------- close timestamps
+
+    @Test
+    fun `SL close carries the timestamp of the candle that hit it`() {
+        val p = pos(1, Side.LONG, entry = 2000.0, sl = 1995.0)
+        val hitTs = T + 3 * MIN
+        val r = FillEngine.processCandle(state(10_000.0, positions = listOf(p)), candle(hitTs, 2000.0, 2001.0, 1994.0, 1994.5), noNews)
+        assertEquals(1, r.closed.size)
+        assertEquals(CloseReason.SL, r.closed[0].reason)
+        assertEquals(hitTs, r.closed[0].closeTs)
+    }
+
+    @Test
+    fun `TP close carries the timestamp of the candle that hit it`() {
+        val p = pos(1, Side.LONG, entry = 2000.0, tp = 2005.0)
+        val hitTs = T + 7 * MIN
+        val r = FillEngine.processCandle(state(10_000.0, positions = listOf(p)), candle(hitTs, 2000.0, 2006.0, 1999.0, 2004.0), noNews)
+        assertEquals(1, r.closed.size)
+        assertEquals(CloseReason.TP, r.closed[0].reason)
+        assertEquals(hitTs, r.closed[0].closeTs)
+    }
+
+    @Test
+    fun `manual close carries the supplied candle timestamp`() {
+        val p = pos(1, Side.LONG, entry = 2000.0)
+        val closeTs = T + 11 * MIN
+        val result = FillEngine.closePosition(state(10_000.0, positions = listOf(p)), 1, 2003.0, closeTs)
+        assertNotNull(result)
+        assertEquals(CloseReason.MANUAL, result!!.second.reason)
+        assertEquals(closeTs, result.second.closeTs)
+    }
+
+    @Test
+    fun `stop-out close carries the timestamp of the candle that stopped it out`() {
+        val p = pos(1, Side.LONG, entry = 2000.0, lots = 1.0)
+        val stopTs = T + 5 * MIN
+        // Worst-case equity 100 - 1000 = -900 at 10000% below zero -> level below the 50% stop-out.
+        val r = FillEngine.processCandle(state(100.0, positions = listOf(p)), candle(stopTs, 2000.0, 2000.0, 1990.0, 1990.0), noNews)
+        assertEquals(1, r.closed.size)
+        assertEquals(CloseReason.STOP_OUT, r.closed[0].reason)
+        assertEquals(stopTs, r.closed[0].closeTs)
+    }
 }

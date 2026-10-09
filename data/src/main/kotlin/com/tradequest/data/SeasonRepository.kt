@@ -1,5 +1,6 @@
 package com.tradequest.data
 
+import androidx.room.withTransaction
 import com.tradequest.engine.ClockEngine
 import com.tradequest.engine.MarketTime
 
@@ -57,6 +58,22 @@ class SeasonRepository(
 
     suspend fun end(seasonId: Long, score: Double, endedAt: Long = clock()) =
         db.seasonDao().end(seasonId, SeasonStatus.ENDED, endedAt, score)
+
+    /**
+     * Debug-only: wipe the season, its trades, stats and equity curve, and drop the engine
+     * checkpoint, then create a fresh season. Imported candles and news are kept. Legacy
+     * rows are never migrated, so this is the way to clear pre-`closeTs` history.
+     */
+    suspend fun resetActive(): Season {
+        db.withTransaction {
+            db.tradeOrderDao().deleteAll()
+            db.dailyStatsDao().deleteAll()
+            db.equitySnapshotDao().deleteAll()
+            db.seasonDao().deleteAll()
+            db.settingsDao().delete(AccountCheckpoint.KEY)
+        }
+        return ensureSeason()
+    }
 
     /** Progress through the 12 weeks, 0..1. */
     fun progress(season: Season, realNow: Long = clock()): Float {

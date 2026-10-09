@@ -80,7 +80,7 @@ class CatchUpProcessor(
                 result.fills.forEach { fills.add(CatchUpFill(it.orderId, it.side, it.lots, it.price, it.reason)) }
                 result.events.forEach { events.add(CatchUpEvent(it.ts, it.type.name, it.message)) }
                 result.closed.forEach { c ->
-                    closedRows.add(TradeProjection.closedRows(seasonId, listOf(c), lookup::get).first().copy(closedAt = row.ts))
+                    closedRows.add(TradeProjection.closedRows(seasonId, listOf(c), lookup::get).first())
                     closes.add(CatchUpClose(c.positionId, c.reason.name, c.netPnl))
                 }
             }

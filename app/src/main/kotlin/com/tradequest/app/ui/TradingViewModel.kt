@@ -128,7 +128,10 @@ class TradingViewModel @Inject constructor(
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val history: StateFlow<List<TradeOrder>> = seasonFlow
-        .flatMapLatest { s -> if (s == null) flowOf(emptyList()) else trading.closedSince(s.id, s.lastProcessedTs) }
+        .flatMapLatest { s ->
+            if (s == null) flowOf(emptyList())
+            else trading.closedSince(s.id, ClockEngine.lastVisibleCandleTs(s.lastProcessedTs))
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
@@ -145,17 +148,30 @@ class TradingViewModel @Inject constructor(
         }
         observeRiskPercent()
 
+        startSeason()
+        ready = true
+        observeTicker()
+        observeOrders()
+    }
+
+    /** Season-dependent startup, shared by first launch and the debug reset. */
+    private suspend fun startSeason() {
         val season = seasons.ensureSeason()
         seasonId = season.id
         offsetMs = season.offsetMs
         _displayOffsetMs.value = offsetMs
         controller.setDisplayOffset(offsetMs)
-
         runCatchUp(initial = true)
         loadInitialWindow()
-        ready = true
-        observeTicker()
-        observeOrders()
+    }
+
+    /** Debug-only: wipe all trades/season state, then replay a fresh $10,000 season. */
+    fun debugResetSeason() {
+        viewModelScope.launch {
+            seasons.resetActive()
+            startSeason()
+            refreshDerived()
+        }
     }
 
     private fun observeRiskPercent() {
@@ -212,11 +228,12 @@ class TradingViewModel @Inject constructor(
         }
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun observeOrders() {
         viewModelScope.launch {
-            trading.allOrders(seasonId).collect { orders ->
-                applyOverlays(orders)
-            }
+            seasonFlow
+                .flatMapLatest { s -> if (s == null) flowOf(emptyList()) else trading.allOrders(s.id) }
+                .collect { orders -> applyOverlays(orders) }
         }
     }
 
@@ -351,7 +368,8 @@ class TradingViewModel @Inject constructor(
 
     fun closePosition(positionId: Long, lots: Double? = null) {
         viewModelScope.launch {
-            trading.closePosition(seasonId, positionId, _quote.value.bid, lots)
+            // The live market's "now" is the last visible candle; that is the close time.
+            trading.closePosition(seasonId, positionId, _quote.value.bid, ClockEngine.lastVisibleCandleTs(_histNow.value), lots)
             refreshDerived()
         }
     }

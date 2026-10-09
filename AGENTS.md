@@ -65,4 +65,9 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   the same Room transaction as `Season.lastProcessedTs`, so an interrupted run resumes
   exactly. Keep both in one `withTransaction`.
 - Orders are evaluated from the next candle after placement.
+- Every closed trade carries `closedAt` = the timestamp of the candle whose processing
+  closed it (`ClosedPosition.closeTs`): SL/TP/stop-out use the candle that triggered them,
+  a manual close uses the season's last visible candle. `closedAt` is never wall-clock and
+  never null for rows written by the engine. Legacy null rows are not migrated; use the
+  debug "Reset season" action instead.
 - Process death must lose nothing: all authoritative state lives in Room, not in memory.
