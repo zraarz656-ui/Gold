@@ -11,3 +11,9 @@ local.properties
 
 # Local APK download directory
 dist/
+
+# Dev/recovery artifacts (not source): branch bundles, format-patch exports, APKs.
+export/
+patches/
+*.bundle
+*.patch
