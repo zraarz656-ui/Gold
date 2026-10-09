@@ -3,24 +3,25 @@ package com.tradequest.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tradequest.app.ui.theme.TradeNumberField
+import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.data.OrderRequest
 import com.tradequest.data.RiskCalculator
 import com.tradequest.engine.FillEngine
@@ -62,94 +63,86 @@ fun OrderSheet(
         null
     }
 
-    Column(
-        modifier
-            .fillMaxWidth()
-            .background(PanelBg)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            ORDER_TYPES.forEach { t ->
-                Chip(shortLabel(t), selected = type == t) { type = t }
+    val c = tradeColors
+    CompositionLocalProvider(LocalContentColor provides c.onSurface) {
+        Column(
+            modifier
+                .fillMaxWidth()
+                .background(c.surfaceVariant)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ORDER_TYPES.forEach { t ->
+                    Chip(shortLabel(t), selected = type == t) { type = t }
+                }
             }
-        }
 
-        if (type != OrderType.MARKET) {
-            NumberField("Trigger price", price, { price = it })
-        }
+            if (type != OrderType.MARKET) {
+                TradeNumberField("Trigger price", price, onChange = { price = it })
+            }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NumberField("Lots", calculatedLots?.let { "%.2f".format(it) } ?: lots, { lots = it }, Modifier.weight(1f))
-            Stepper(onMinus = { lots = stepLots(lots, -0.01) }, onPlus = { lots = stepLots(lots, 0.01) })
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NumberField("SL", sl, { sl = it }, Modifier.weight(1f))
-            NumberField("TP", tp, { tp = it }, Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            NumberField("Trailing distance", trail, { trail = it }, Modifier.weight(1f))
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Chip("Risk calc", selected = useRisk) { useRisk = !useRisk }
-            if (useRisk) {
-                NumberField("Risk %", riskText, { riskText = it }, Modifier.weight(1f))
-                Text(
-                    stopDistance?.let { "→ ${"%.2f".format(calculatedLots ?: 0.0)} lots @ ${"%.2f".format(it)} stop" }
-                        ?: "enter a stop",
-                    color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 16.dp),
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TradeNumberField(
+                    "Lots",
+                    calculatedLots?.let { "%.2f".format(it) } ?: lots,
+                    modifier = Modifier.weight(1f),
+                    onChange = { lots = it },
                 )
+                Stepper(onMinus = { lots = stepLots(lots, -0.01) }, onPlus = { lots = stepLots(lots, 0.01) })
             }
-        }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    val request = OrderRequest(
-                        type = type,
-                        lots = (calculatedLots ?: lots.toDoubleOrNull() ?: 0.0),
-                        price = price.toDoubleOrNull(),
-                        sl = sl.toDoubleOrNull(),
-                        tp = tp.toDoubleOrNull(),
-                        trailingDist = trail.toDoubleOrNull(),
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TradeNumberField("SL", sl, Modifier.weight(1f)) { sl = it }
+                TradeNumberField("TP", tp, Modifier.weight(1f)) { tp = it }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TradeNumberField("Trailing distance", trail, Modifier.weight(1f)) { trail = it }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Chip("Risk calc", selected = useRisk) { useRisk = !useRisk }
+                if (useRisk) {
+                    TradeNumberField("Risk %", riskText, Modifier.weight(1f)) { riskText = it }
+                    Text(
+                        stopDistance?.let { "→ ${"%.2f".format(calculatedLots ?: 0.0)} lots @ ${"%.2f".format(it)} stop" }
+                            ?: "enter a stop",
+                        color = c.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 16.dp),
                     )
-                    onPlace(request)
-                    onDismiss()
-                },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (side == Side.LONG) Positive else Negative,
-                ),
-            ) { Text(if (side == Side.LONG) "Buy ${"%.2f".format(quote.ask)}" else "Sell ${"%.2f".format(quote.bid)}") }
-            Button(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val request = OrderRequest(
+                            type = type,
+                            lots = (calculatedLots ?: lots.toDoubleOrNull() ?: 0.0),
+                            price = price.toDoubleOrNull(),
+                            sl = sl.toDoubleOrNull(),
+                            tp = tp.toDoubleOrNull(),
+                            trailingDist = trail.toDoubleOrNull(),
+                        )
+                        onPlace(request)
+                        onDismiss()
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (side == Side.LONG) c.positive else c.negative,
+                        contentColor = c.onAccent,
+                    ),
+                ) { Text(if (side == Side.LONG) "Buy ${"%.2f".format(quote.ask)}" else "Sell ${"%.2f".format(quote.bid)}") }
+                Button(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
+            }
         }
     }
 }
 
 @Composable
-private fun NumberField(
-    label: String,
-    value: String,
-    onChange: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        label = { Text(label, fontSize = 11.sp) },
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        modifier = modifier.fillMaxWidth(),
-    )
-}
-
-@Composable
 private fun Stepper(onMinus: () -> Unit, onPlus: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Button(onClick = onPlus, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("+") }
-        Button(onClick = onMinus, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) { Text("−") }
+        Button(onClick = onPlus, contentPadding = PaddingValues(0.dp)) { Text("+") }
+        Button(onClick = onMinus, contentPadding = PaddingValues(0.dp)) { Text("−") }
     }
 }
 
@@ -169,19 +162,20 @@ private fun shortLabel(t: OrderType): String = when (t) {
 /** A quick Buy/Sell row shown on the chart when the sheet is closed. */
 @Composable
 fun BuySellBar(quote: Quote, onOpen: (OrderType) -> Unit, modifier: Modifier = Modifier) {
+    val c = tradeColors
     Row(
-        modifier.fillMaxWidth().background(PanelBg).padding(8.dp),
+        modifier.fillMaxWidth().background(c.surfaceVariant).padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Button(
             onClick = { onOpen(OrderType.MARKET) },
             modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.buttonColors(containerColor = Positive),
+            colors = ButtonDefaults.buttonColors(containerColor = c.positive, contentColor = c.onAccent),
         ) { Text("Buy ${"%.2f".format(quote.ask)}") }
         Button(
             onClick = { onOpen(OrderType.MARKET) },
             modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.buttonColors(containerColor = Negative),
+            colors = ButtonDefaults.buttonColors(containerColor = c.negative, contentColor = c.onAccent),
         ) { Text("Sell ${"%.2f".format(quote.bid)}") }
     }
 }

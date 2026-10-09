@@ -23,12 +23,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tradequest.app.BuildConfig
+import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.chart.ChartPanel
 import com.tradequest.chart.CrosshairInfo
 import com.tradequest.chart.TIMEFRAMES
@@ -59,8 +59,9 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     var crosshair by remember { mutableStateOf<CrosshairInfo?>(null) }
     var showResetConfirm by remember { mutableStateOf(false) }
     val controller = viewModel.controller
+    val c = tradeColors
 
-    Column(modifier.fillMaxSize().background(Color(0xFF12161C))) {
+    Column(modifier.fillMaxSize().background(c.surface)) {
         EquityStrip(strip, quote)
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Chip("Chart", tab == 0) { tab = 0 }
@@ -138,11 +139,12 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
 
 @Composable
 private fun StartupOverlay(state: StartupState, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize().background(Color(0xFF12161C)), contentAlignment = Alignment.Center) {
+    val c = tradeColors
+    Box(modifier.fillMaxSize().background(c.surface), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             when (state.phase) {
                 StartupPhase.IMPORTING -> {
-                    Text("Importing market data…", color = Color.White, fontSize = 14.sp)
+                    Text("Importing market data…", color = c.onSurface, fontSize = 14.sp)
                     LinearProgressIndicator(
                         progress = { state.importFraction },
                         modifier = Modifier.fillMaxWidth(0.7f),
@@ -150,10 +152,10 @@ private fun StartupOverlay(state: StartupState, modifier: Modifier = Modifier) {
                 }
                 StartupPhase.CATCHING_UP -> {
                     CircularProgressIndicator()
-                    Text("Catching up…", color = Color.White, fontSize = 14.sp)
+                    Text("Catching up…", color = c.onSurface, fontSize = 14.sp)
                     Text(
                         "Replaying candles up to the current market time",
-                        color = Muted, fontSize = 11.sp,
+                        color = c.onSurfaceVariant, fontSize = 11.sp,
                     )
                 }
                 StartupPhase.READY -> {}
@@ -165,14 +167,15 @@ private fun StartupOverlay(state: StartupState, modifier: Modifier = Modifier) {
 /** Small banner reused by the chart when the market is shut. */
 @Composable
 fun MarketClosedBanner(modifier: Modifier = Modifier) {
+    val c = tradeColors
     Text(
         "Market closed",
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xCC1A1F27))
+            .background(c.surfaceVariant)
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .clickable { },
-        color = Color(0xFFFFB300),
+        color = c.warning,
         fontWeight = FontWeight.Bold,
         fontSize = 13.sp,
     )
@@ -181,10 +184,11 @@ fun MarketClosedBanner(modifier: Modifier = Modifier) {
 /** Replaces the order controls while the market is shut for the weekend. */
 @Composable
 private fun ClosedFooter() {
+    val c = tradeColors
     Text(
         "Market closed — orders resume at the Sunday rollover",
-        modifier = Modifier.fillMaxWidth().background(PanelBg).padding(12.dp),
-        color = Muted,
+        modifier = Modifier.fillMaxWidth().background(c.surfaceVariant).padding(12.dp),
+        color = c.onSurfaceVariant,
         fontSize = 12.sp,
     )
 }

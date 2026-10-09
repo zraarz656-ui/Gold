@@ -18,6 +18,18 @@ bundled 1-minute history using a whole-week time offset.
 - `app` — Hilt/Compose app: `TradingViewModel`, screens, `LiveClock` (minute ticker),
   `CatchUpWorker`/`CatchUpScheduler`/`Notifier`.
 
+### Theming
+
+All app colours come from `app/ui/theme/Theme.kt` (`TradeQuestColors` + `LocalTradeQuestColors`).
+`MainActivity` wraps the UI in `TradeQuestTheme(controller.state.theme)`, so the app palette
+follows the chart theme (dark, light, OLED, colour-blind). Screens must **not** hard-code
+`Color(...)`; use the tokens (`surface`, `surfaceVariant`, `onSurface`, `onSurfaceVariant`,
+`outline`, `accent`, `onAccent`, `positive`, `negative`, `warning`). Text inputs must use
+`TradeNumberField`/`tradeFieldColors()` (explicit `OutlinedTextFieldDefaults.colors`) so
+input text, labels and placeholders stay readable. `ThemeContrastTest` asserts >= 4.5:1 for
+every token pair in every theme; `OrderSheetThemeUiTest` (debug-only) types into the sheet
+in all four themes.
+
 ## Build & test
 
 JDK 17 or 21 and the Android SDK are required. The toolchain is preinstalled at

@@ -6,7 +6,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -18,6 +17,8 @@ import androidx.lifecycle.lifecycleScope
 import com.tradequest.app.clock.LiveClock
 import com.tradequest.app.ui.TradeQuestScreen
 import com.tradequest.app.ui.TradingViewModel
+import com.tradequest.app.ui.theme.TradeQuestTheme
+import com.tradequest.app.ui.theme.tradeColors
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -37,17 +38,18 @@ class MainActivity : ComponentActivity() {
         liveClock.start(lifecycleScope)
 
         setContent {
-            MaterialTheme {
-                Surface {
-                    TradeQuest()
+            val vm: TradingViewModel = hiltViewModel()
+            val theme = vm.controller.state.theme
+            TradeQuestTheme(theme) {
+                Surface(color = tradeColors.surface) {
+                    TradeQuest(vm)
                 }
             }
         }
     }
 
     @Composable
-    private fun TradeQuest() {
-        val vm: TradingViewModel = hiltViewModel()
+    private fun TradeQuest(vm: TradingViewModel) {
         val owner = LocalLifecycleOwner.current
         DisposableEffect(owner) {
             val observer = LifecycleEventObserver { _, event ->
