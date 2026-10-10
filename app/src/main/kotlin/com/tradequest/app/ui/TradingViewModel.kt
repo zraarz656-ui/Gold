@@ -14,6 +14,7 @@ import com.tradequest.data.AccountCheckpoint
 import com.tradequest.data.AssetSource
 import com.tradequest.data.CandleRepository
 import com.tradequest.data.CatchUpProcessor
+import com.tradequest.data.DailyStats
 import com.tradequest.data.DailyStatsDao
 import com.tradequest.data.DatabaseIntrospector
 import com.tradequest.data.DatasetImporter
@@ -24,6 +25,7 @@ import com.tradequest.data.EquitySnapshotEntity
 import com.tradequest.data.ImportProgress
 import com.tradequest.data.ImportResult
 import com.tradequest.data.OrderRequest
+import com.tradequest.data.OrderRules
 import com.tradequest.data.OrderStatus
 import com.tradequest.data.PreferencesStore
 import com.tradequest.data.RiskCalculator
@@ -215,7 +217,7 @@ class TradingViewModel @Inject constructor(
     val history: StateFlow<List<TradeOrder>> = seasonFlow
         .flatMapLatest { s ->
             if (s == null) flowOf(emptyList())
-            else trading.closedSince(s.id, ClockEngine.lastVisibleCandleTs(s.lastProcessedTs))
+            else trading.closedOrders(s.id)
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -584,14 +586,27 @@ class TradingViewModel @Inject constructor(
             else (pos.entryPrice - bid) * FillEngine.LOT_OZ * pos.lots
         }
         val equity = state.balance + floating
-        val day = dailyStats.forDay(seasonId, com.tradequest.engine.MarketCalendar.dayStart(_histNow.value))
+        val dayKey = com.tradequest.engine.MarketCalendar.dayStart(_histNow.value)
+        val day = dailyStats.forDay(seasonId, dayKey)
+        // The engine records the day-start equity at each rollover; prefer it, then the
+        // stored rollup, then the season balance. Never fall back to the season start, which
+        // made "Day P&L" silently show the whole-season P&L.
+        val dayStart = when {
+            day != null -> day.startEquity
+            state.dayStartEquity > 0.0 -> state.dayStartEquity
+            else -> season.startBalance
+        }
+        val dayPnl = equity - dayStart
+        dailyStats.upsert(
+            DailyStats(seasonId, dayKey, startEquity = dayStart, pnl = dayPnl, limitHit = state.dailyBlocked),
+        )
         val margin = state.positions.sumOf { (if (bid > 0.0) bid else it.entryPrice) * it.lots }
         val level = if (margin <= 0.0) Double.MAX_VALUE else equity / margin * 100.0
         _strip.value = AccountStrip(
             balance = state.balance,
             equity = equity,
             floatingPnl = floating,
-            dayPnl = equity - (day?.startEquity ?: season.startBalance),
+            dayPnl = dayPnl,
             marginLevel = level,
             openPositions = state.positions.size,
             pendingOrders = state.orders.size,
@@ -690,7 +705,13 @@ class TradingViewModel @Inject constructor(
                 request.lots <= 0.0 -> "lot size must be greater than 0"
                 quote.bid <= 0.0 && request.type == OrderType.MARKET -> "no live quote yet"
                 state.dailyBlocked -> "daily loss limit reached; new orders are blocked today"
-                else -> null
+                else -> OrderRules.requestError(
+                    request,
+                    bid = quote.bid,
+                    ask = quote.ask,
+                    spread = quote.spread,
+                    entry = entryFor(request, quote),
+                )
             }
             if (reason != null) {
                 Log.w(TAG, "placeOrder: early return - $reason")
@@ -740,6 +761,14 @@ class TradingViewModel @Inject constructor(
 
     fun editStops(orderId: Long, sl: Double?, tp: Double?) {
         viewModelScope.launch {
+            val existing = trading.order(orderId)
+            val entry = existing?.entryPrice
+            if (existing != null && entry != null) {
+                OrderRules.stopsError(existing.side, entry, sl, tp)?.let {
+                    _submitError.value = it
+                    return@launch
+                }
+            }
             catchUpMutex.withLock { trading.editStops(seasonId, orderId, sl, tp) }
             refreshDerived()
         }
@@ -750,6 +779,14 @@ class TradingViewModel @Inject constructor(
         OrderType.MARKET, OrderType.BUY_LIMIT, OrderType.BUY_STOP -> _quote.value.ask
         OrderType.SELL_LIMIT, OrderType.SELL_STOP -> _quote.value.bid
     }
+
+    /** The price a submitted order would use, for validating its SL/TP against the entry. */
+    private fun entryFor(request: OrderRequest, quote: Quote): Double =
+        request.price?.takeIf { it > 0.0 } ?: when (request.type) {
+            OrderType.MARKET -> if (request.side == Side.SHORT) quote.bid else quote.ask
+            OrderType.SELL_LIMIT, OrderType.SELL_STOP -> quote.bid
+            OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
+        }
 
     companion object {
         private const val LARGE_GAP = 5_000L

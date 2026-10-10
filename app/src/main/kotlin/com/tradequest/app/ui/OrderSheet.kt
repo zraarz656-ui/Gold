@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.tradequest.app.ui.theme.TradeNumberField
 import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.data.OrderRequest
+import com.tradequest.data.OrderRules
 import com.tradequest.data.RiskCalculator
 import com.tradequest.engine.FillEngine
 import com.tradequest.engine.OrderType
@@ -53,6 +54,7 @@ fun OrderSheet(
     var trail by remember { mutableStateOf("") }
     var useRisk by remember { mutableStateOf(false) }
     var riskText by remember { mutableStateOf("%.1f".format(riskPercent)) }
+    var error by remember { mutableStateOf<String?>(null) }
 
     // Pending types carry their own side; a market order needs the explicit toggle.
     val pendingSide = when (type) {
@@ -74,17 +76,25 @@ fun OrderSheet(
     val effectiveLots = calculatedLots ?: (lots.toDoubleOrNull() ?: 0.0)
 
     fun place(t: OrderType, s: Side) {
-        onPlace(
-            OrderRequest(
-                type = t,
-                side = s,
-                lots = effectiveLots,
-                price = price.toDoubleOrNull(),
-                sl = sl.toDoubleOrNull(),
-                tp = tp.toDoubleOrNull(),
-                trailingDist = trail.toDoubleOrNull(),
-            ),
+        val request = OrderRequest(
+            type = t,
+            side = s,
+            lots = effectiveLots,
+            price = price.toDoubleOrNull(),
+            sl = sl.toDoubleOrNull(),
+            tp = tp.toDoubleOrNull(),
+            trailingDist = trail.toDoubleOrNull(),
         )
+        val entry = price.toDoubleOrNull() ?: when (t) {
+            OrderType.MARKET -> if (s == Side.LONG) quote.ask else quote.bid
+            OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
+            else -> quote.bid
+        }
+        OrderRules.requestError(request, bid = quote.bid, ask = quote.ask, spread = quote.spread, entry = entry)?.let {
+            error = it
+            return
+        }
+        onPlace(request)
         onDismiss()
     }
 
@@ -140,6 +150,10 @@ fun OrderSheet(
                         color = c.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 16.dp),
                     )
                 }
+            }
+
+            error?.let {
+                Text(it, color = c.negative, fontSize = 11.sp)
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

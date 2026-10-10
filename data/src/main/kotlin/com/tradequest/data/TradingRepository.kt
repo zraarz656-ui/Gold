@@ -42,6 +42,10 @@ class TradingRepository(private val db: TradeQuestDatabase) {
     fun closedSince(seasonId: Long, sinceTs: Long): Flow<List<TradeOrder>> =
         db.tradeOrderDao().closedFlow(seasonId, sinceTs)
 
+    /** Every closed trade of the season, oldest first. Closed trades never vanish. */
+    fun closedOrders(seasonId: Long): Flow<List<TradeOrder>> =
+        db.tradeOrderDao().closedFlow(seasonId, 0L)
+
     suspend fun order(id: Long): TradeOrder? = db.tradeOrderDao().byId(id)
 
     /**

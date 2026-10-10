@@ -194,6 +194,29 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   launch → resume → submit and asserts a position opens; `submitIsAcceptedAsSoonAsTheQuoteIsLive`
   pins the exact failure window.
 
+## Closed trades, P&L and invalid stop/trigger prices (findings 1–4)
+- **Finding #1/#4 — "closed trades vanish" / "orders close by themselves".** `TradingViewModel.history`
+  was built with `closedSince(seasonId, lastVisibleCandleTs(season.lastProcessedTs))`, i.e. a
+  *sliding one-minute window* whose lower bound advanced every minute as catch-up moved the
+  clock. Any trade closed more than a minute earlier silently dropped out. History now uses
+  `TradingRepository.closedOrders(seasonId)` (`closedAt >= 0`): closed trades are permanent.
+- **Finding #4 root cause — invalid stop/trigger prices.** Manual SL/TP inputs and resting
+  trigger prices were never validated. The chart drag path checks them via `LevelRules`, but
+  the order sheet and the Positions editor did not. An SL on the wrong side of the entry makes
+  the engine close the position on the very next candle (e.g. a long at 3980 with `sl=5000`
+  "closed as SL" at +$1,953), and a buy limit above the market fills instantly as a GAP.
+  `OrderRules` (data module, pure) now rejects: SL/TP on the wrong side of, or equal to, the
+  entry; non-positive prices; a resting trigger on the wrong side of the market or within
+  `spread + 0.10` of it; and `lots <= 0`. Enforced in `TradingViewModel.placeOrder`
+  (authoritative), `editStops`, and inline in `OrderSheet` (shown without dismissing the sheet).
+- **Finding #2 — Day P&L.** With no position, `dayPnl` fell back to `season.startBalance`
+  (via `DailyStats.startEquity` defaulting there), so it showed the whole-season P&L. It now
+  prefers `DailyStats.startEquity`, then `state.dayStartEquity` (the engine records day-start
+  equity at each rollover), then the season balance, and persists a `DailyStats` row.
+- Regression tests: `ClosedTradeHistoryTest`, `DayPnlTest`, `OrderRulesTest`,
+  and two cases in `OrderSubmitAfterResumeTest`. All share `TradingHarness` (Robolectric +
+  in-memory Room + the real ViewModel/repositories).
+
 ## Pushing (auth note, current environment)
 - The default `git push` prompts for a username and hangs, so always push non-interactively
   with `GIT_TERMINAL_PROMPT=0`.
