@@ -37,6 +37,18 @@ interface CandleDao {
     @Query("SELECT * FROM candle_1m WHERE ts <= :ts ORDER BY ts ASC")
     suspend fun upTo(ts: Long): List<Candle1m>
 
+    /** Close of the earliest candle, or null when the table is empty. */
+    @Query("SELECT c FROM candle_1m ORDER BY ts ASC LIMIT 1")
+    suspend fun firstClose(): Double?
+
+    /** Close of the latest candle, or null when the table is empty. */
+    @Query("SELECT c FROM candle_1m ORDER BY ts DESC LIMIT 1")
+    suspend fun lastClose(): Double?
+
+    /** All closes ascending; used to derive min/median/max for the debug panel. */
+    @Query("SELECT c FROM candle_1m ORDER BY ts ASC")
+    suspend fun allCloses(): List<Double>
+
     @Query("SELECT * FROM candle_1m WHERE ts <= :ts ORDER BY ts DESC LIMIT :limit")
     suspend fun lastBefore(ts: Long, limit: Int): List<Candle1m>
 

@@ -14,6 +14,11 @@ data class DatabaseSummary(
     val lastTs: Long,
     val newsCount: Long,
     val gaps: List<CandleGap>,
+    val closeFirst: Double = 0.0,
+    val closeLast: Double = 0.0,
+    val closeMin: Double = 0.0,
+    val closeMedian: Double = 0.0,
+    val closeMax: Double = 0.0,
 )
 
 /**
@@ -42,7 +47,22 @@ object DatabaseIntrospector {
             if (prev != Long.MIN_VALUE && ts - prev > GAP_MS) gaps.add(CandleGap(prev, ts))
             prev = ts
         }
-        return DatabaseSummary(candles, first, last, news, gaps)
+        val closes = db.candleDao().allCloses()
+        return DatabaseSummary(
+            candles, first, last, news, gaps,
+            closeFirst = closes.firstOrNull() ?: 0.0,
+            closeLast = closes.lastOrNull() ?: 0.0,
+            closeMin = closes.minOrNull() ?: 0.0,
+            closeMedian = median(closes),
+            closeMax = closes.maxOrNull() ?: 0.0,
+        )
+    }
+
+    private fun median(values: List<Double>): Double {
+        if (values.isEmpty()) return 0.0
+        val s = values.sorted()
+        val n = s.size
+        return if (n % 2 == 1) s[n / 2] else (s[n / 2 - 1] + s[n / 2]) / 2.0
     }
 
     /**

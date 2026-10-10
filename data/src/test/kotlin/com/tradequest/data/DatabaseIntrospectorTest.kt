@@ -28,6 +28,15 @@ class DatabaseIntrospectorTest {
         assertEquals(1L, s.newsCount)
         assertEquals(0, s.gaps.size)
         assertEquals(0, DatabaseIntrospector.weekdayGaps(s).size)
+        // Close stats mirror the inserted series (first/last exact; min/median/max ordered).
+        val closes = TestDb.candles(count = 100, startTs = base).map { it.c }
+        assertEquals(closes.first(), s.closeFirst, 0.0)
+        assertEquals(closes.last(), s.closeLast, 0.0)
+        assertEquals(closes.min(), s.closeMin, 0.0)
+        assertEquals(closes.max(), s.closeMax, 0.0)
+        // Even count: median is the mean of the two middle values.
+        val sorted = closes.sorted()
+        assertEquals((sorted[49] + sorted[50]) / 2.0, s.closeMedian, 0.0)
         db.close()
     }
 
