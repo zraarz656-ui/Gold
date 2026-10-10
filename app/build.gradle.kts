@@ -18,12 +18,28 @@ android {
         versionName = "0.1.0"
     }
 
+    // A fixed debug keystore, committed at keystore/tradequest-debug.keystore (see
+    // KEYSTORE.md). Using one stable key for every debug build means updates install over
+    // the previous build without uninstalling. This is a debug-only, well-known secret
+    // (password "android"), never used for release artefacts.
+    signingConfigs {
+        create("debugFixed") {
+            storeFile = rootProject.file("keystore/tradequest-debug.keystore")
+            storePassword = "android"
+            keyAlias = "tradequest-debug"
+            keyPassword = "android"
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debugFixed")
+        }
         release {
             isMinifyEnabled = false
         }

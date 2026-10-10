@@ -45,6 +45,11 @@ export ANDROID_HOME=/workspace/toolchain/android-sdk ANDROID_SDK_ROOT=/workspace
 ./gradlew :data:test :engine:test :app:assembleDebug
 ```
 
+Debug builds are signed with the committed fixed key `keystore/tradequest-debug.keystore`
+(alias `tradequest-debug`, password `android`; see `keystore/KEYSTORE.md`). One stable key
+means an updated APK installs over the previously installed build without uninstalling.
+The key is debug-only and not a secret; release builds are unsigned here.
+
 ## Phase 1/2 recovery from the debug APK
 
 The original Phase 1/2 sources were never pushed and no longer exist on disk. The provided
