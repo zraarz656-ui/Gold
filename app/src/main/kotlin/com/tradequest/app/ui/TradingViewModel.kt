@@ -11,6 +11,7 @@ import com.tradequest.chart.LevelOutcome
 import com.tradequest.chart.LiveDisplayPath
 import com.tradequest.chart.OrderLineKind
 import com.tradequest.chart.PriceLabelSize
+import com.tradequest.app.clock.collectRestarting
 import com.tradequest.data.AccountCheckpoint
 import com.tradequest.data.AssetSource
 import com.tradequest.data.CandleRepository
@@ -180,6 +181,10 @@ class TradingViewModel @Inject constructor(
     val lastTickWallMs: StateFlow<Long> = _lastTickWallMs.asStateFlow()
     @Volatile
     private var lastTickHistNow: Long = 0L
+
+    /** WATCHDOG: the last throwable that killed the tick collector, for stall diagnostics. */
+    @Volatile
+    private var lastTickError: Throwable? = null
 
     // Wall time of the last accepted order submission; a second tap within
     // SUBMIT_DEBOUNCE_MS is coalesced. Lives only in memory: after process death the
@@ -372,8 +377,15 @@ class TradingViewModel @Inject constructor(
                 if (last == 0L) continue
                 val since = System.currentTimeMillis() - last
                 if (since >= WATCHDOG_MS && !isMarketClosed(_histNow.value)) {
-                    Log.e(TAG, "TICK STALL: no minute tick for ${since}ms " +
-                        "histNow=${_histNow.value} lastTickHistNow=$lastTickHistNow", Throwable("TICK STALL"))
+                    // WATCHDOG: include the last collector failure so a silent stall is traceable.
+                    val err = lastTickError
+                    Log.e(
+                        TAG,
+                        "TICK STALL: no minute tick for ${since}ms " +
+                            "histNow=${_histNow.value} lastTickHistNow=$lastTickHistNow " +
+                            "lastTickError=${err?.let { "${it::class.simpleName}: ${it.message}" } ?: "none"}",
+                        err ?: Throwable("TICK STALL"),
+                    )
                 }
             }
         }
@@ -609,7 +621,16 @@ class TradingViewModel @Inject constructor(
 
     private fun observeTicker() {
         viewModelScope.launch {
-            candles.ticker.collect { visibleTs ->
+            // WATCHDOG: a bare `collect` on a hot StateFlow is cancelled for good by a single
+            // throw from the per-tick work (catch-up, refresh, append), after which no minute
+            // tick is ever delivered again. Re-collect on failure so the tick resumes.
+            candles.ticker.collectRestarting(
+                restartDelayMs = TICK_RESTART_MS,
+                onError = { t ->
+                    lastTickError = t // WATCHDOG
+                    Log.e(TAG, "observeTicker: collector failed; restarting", t) // WATCHDOG
+                },
+            ) { visibleTs ->
                 val now = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
                 _histNow.value = now
                 _lastTickWallMs.value = System.currentTimeMillis() // WATCHDOG
@@ -1018,6 +1039,8 @@ class TradingViewModel @Inject constructor(
         private const val SUBMIT_DEBOUNCE_MS = 400L
         // WATCHDOG: how long without a minute tick before "TICK STALL" is logged.
         private const val WATCHDOG_MS = 90_000L
+        /** WATCHDOG: delay before re-collecting the minute ticker after a failure. */
+        private const val TICK_RESTART_MS = 1_000L
         private const val TAG = "TradeQuest"
         private const val NOT_READY_MESSAGE = "Market data is still loading"
     }
