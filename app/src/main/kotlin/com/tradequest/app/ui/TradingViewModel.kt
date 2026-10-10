@@ -444,7 +444,7 @@ class TradingViewModel @Inject constructor(
                         markers.add(ChartMarker(it, entry, entry = true, long = o.side == Side.LONG))
                     }
                 }
-                OrderStatus.PENDING -> {
+                OrderStatus.PENDING, OrderStatus.QUEUED -> {
                     val price = o.entryPrice ?: continue
                     val handles = buildList {
                         if (o.sl == null) add(OrderLineKind.SL)
@@ -633,7 +633,10 @@ class TradingViewModel @Inject constructor(
 
     fun placeOrder(request: OrderRequest) {
         viewModelScope.launch {
-            catchUpMutex.withLock { trading.place(seasonId, request, _histNow.value) }
+            val quote = _quote.value
+            catchUpMutex.withLock {
+                trading.place(seasonId, request, _histNow.value, bid = quote.bid, ask = quote.ask)
+            }
             refreshDerived()
         }
     }

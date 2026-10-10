@@ -53,7 +53,7 @@ data class Season(
 )
 
 /** Lifecycle state of a trade order. */
-enum class OrderStatus { PENDING, OPEN, CLOSED, CANCELLED }
+enum class OrderStatus { PENDING, QUEUED, OPEN, CLOSED, CANCELLED }
 
 /** A trade order (pending) or open/closed position. */
 @Entity(tableName = "trade_order", indices = [Index("seasonId"), Index("status")])

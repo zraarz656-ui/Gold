@@ -153,6 +153,28 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   shows "Opens in Hh Mm (weekday HH:mm local)" from `MarketCalendar.nextOpen`. The countdown
   on/off preference lives in `PreferencesStore` (`show_candle_countdown`).
 
+## Order timing (the 11:39 bug)
+- With the market OPEN a `MARKET` order fills **at once** via `FillEngine.fillMarketImmediately`
+  at the displayed ask (long) or bid (short), stamped `openedAt = placedAt`. It never waits for
+  the next candle and is never evaluated against the candle it was placed on.
+- Only `BUY_LIMIT`/`SELL_LIMIT`/`BUY_STOP`/`SELL_STOP`, plus SL and TP, rest and fill on a
+  later candle (`candle.ts > order.placedAtTs`).
+- With the market SHUT (weekend) a `MARKET` order is stored as `OrderStatus.QUEUED` and the
+  engine fills it at the first candle after the reopen, at that candle's open-based price
+  (`reason = "QUEUED"`). The card reads "Queued, fills when market opens" and the chart footer
+  says market orders are queued.
+- `placedAtTs` in `Order`/`OrderDto` is the placement instant. It is the *live* historical
+  clock `_histNow` at placement, which is NOT `lastVisibleCandleTs(histNow)`: the latter is up
+  to one minute earlier. `fillMarketImmediately` uses the passed bid/ask (the same quote the
+  sheet shows), so the fill price matches the button.
+- **Never** stamp an entry earlier than its placement: `FillEngine` uses
+  `openedAtTs = maxOf(candle.ts, order.placedAtTs)`. The 11:39-vs-11:48 report came from the
+  engine stamping the *earlier* `lastVisibleCandleTs` while the app displayed the later
+  `_histNow`; using one consistent `placedAt` fixes it.
+- `place(seasonId, request, placedAt, bid, ask)` is the only entry point; the VM passes
+  `_histNow` and the current quote. `OrderStatus` gained `QUEUED` (between PENDING and OPEN);
+  `OrderStatus.QUEUED` behaves like PENDING in the chart overlays and the live-orders queries.
+
 ## Pushing (auth note, current environment)
 - The default `git push` prompts for a username and hangs, so always push non-interactively
   with `GIT_TERMINAL_PROMPT=0`.

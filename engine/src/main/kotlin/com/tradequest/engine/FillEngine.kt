@@ -19,6 +19,11 @@ data class Order(
     val placedAtTs: Long,
     /** Trailing-stop distance in price units; null disables trailing. */
     val trailDistance: Double? = null,
+    /**
+     * True for a market order placed while the market was shut. It waits and fills at the
+     * first candle after the reopen instead of at placement.
+     */
+    val queued: Boolean = false,
 )
 
 /** An open position. All fields are immutable; changes produce a copy. */
@@ -170,6 +175,28 @@ object FillEngine {
         if (state.dailyBlocked) state else state.copy(orders = state.orders + order)
 
     /**
+     * Fill a market order at once at [price] (the displayed ask for a long, bid for a
+     * short) and open a position stamped at [atTs]. This is the open-market path: the
+     * order never waits for the next candle. Pure, like [processCandle].
+     *
+     * @return the updated state, or [state] unchanged when the daily limit blocks orders.
+     */
+    fun fillMarketImmediately(state: AccountState, order: Order, price: Double, atTs: Long): AccountState {
+        if (state.dailyBlocked) return state
+        val position = Position(
+            id = state.nextPositionId,
+            side = order.side,
+            lots = order.lots,
+            entryPrice = roundPrice(price),
+            openedAtTs = atTs,
+            sl = order.sl,
+            tp = order.tp,
+            trailDistance = order.trailDistance,
+        )
+        return state.copy(positions = state.positions + position, nextPositionId = state.nextPositionId + 1)
+    }
+
+    /**
      * Process one 1-minute [candle] against [state].
      *
      * @param news news events used for spread widening and slippage.
@@ -207,8 +234,10 @@ object FillEngine {
                     id = nextPositionId++,
                     side = order.side,
                     lots = order.lots,
+                    // A fill can never be stamped earlier than its placement, even if the
+                    // candle being processed opens before the order was placed.
                     entryPrice = plan.price,
-                    openedAtTs = candle.ts,
+                    openedAtTs = maxOf(candle.ts, order.placedAtTs),
                     sl = order.sl,
                     tp = order.tp,
                     trailDistance = order.trailDistance,
@@ -298,9 +327,10 @@ object FillEngine {
 
     private fun pendingFill(order: Order, candle: Candle, spread: Double, news: List<NewsEvent>): FillPlan? =
         when (order.type) {
+            // A queued market order waits for the reopen; a normal one fills at this candle's open.
             OrderType.MARKET -> {
                 val price = if (order.side == Side.LONG) candle.o + spread else candle.o
-                FillPlan(roundPrice(price), "MARKET")
+                FillPlan(roundPrice(price), if (order.queued) "QUEUED" else "MARKET")
             }
 
             OrderType.BUY_LIMIT -> {

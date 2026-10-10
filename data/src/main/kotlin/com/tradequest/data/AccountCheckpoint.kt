@@ -66,12 +66,13 @@ data class OrderDto(
     val tp: Double? = null,
     val placedAtTs: Long,
     val trailDistance: Double? = null,
+    val queued: Boolean = false,
 ) {
-    fun toEngine(): Order = Order(id, side, type, lots, price, sl, tp, placedAtTs, trailDistance)
+    fun toEngine(): Order = Order(id, side, type, lots, price, sl, tp, placedAtTs, trailDistance, queued)
 
     companion object {
         fun from(o: Order): OrderDto =
-            OrderDto(o.id, o.side, o.type, o.lots, o.price, o.sl, o.tp, o.placedAtTs, o.trailDistance)
+            OrderDto(o.id, o.side, o.type, o.lots, o.price, o.sl, o.tp, o.placedAtTs, o.trailDistance, o.queued)
     }
 }
 
@@ -132,7 +133,7 @@ object TradeProjection {
         sl = o.sl,
         tp = o.tp,
         trailingDist = o.trailDistance,
-        status = OrderStatus.PENDING,
+        status = if (o.queued) OrderStatus.QUEUED else OrderStatus.PENDING,
         openedAt = o.placedAtTs,
         closedAt = null,
         closePrice = null,

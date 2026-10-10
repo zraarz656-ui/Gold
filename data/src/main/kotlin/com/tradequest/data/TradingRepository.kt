@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.tradequest.engine.AccountState
 import com.tradequest.engine.ClosedPosition
 import com.tradequest.engine.FillEngine
+import com.tradequest.engine.MarketCalendar
 import com.tradequest.engine.Order
 import com.tradequest.engine.OrderType
 import com.tradequest.engine.Side
@@ -43,22 +44,43 @@ class TradingRepository(private val db: TradeQuestDatabase) {
 
     suspend fun order(id: Long): TradeOrder? = db.tradeOrderDao().byId(id)
 
-    suspend fun place(seasonId: Long, request: OrderRequest, histNow: Long): Long {
+    /**
+     * Place an order at the replayed instant [placedAt].
+     *
+     * An OPEN market fills a market order at once at the displayed price ([ask] for a long,
+     * [bid] for a short) and opens the position stamped at [placedAt] — it never waits for
+     * the next candle. While the market is SHUT the order is stored as QUEUED and the engine
+     * fills it at the first candle after the reopen. Limit and stop orders always rest and
+     * fill on a later candle.
+     */
+    suspend fun place(
+        seasonId: Long,
+        request: OrderRequest,
+        placedAt: Long,
+        bid: Double,
+        ask: Double,
+    ): Long {
         val state = loadState(seasonId)
         val orderId = state.nextPositionId
+        val side = request.side ?: sideOf(request.type)
+        val marketOpen = !MarketCalendar.isClosed(placedAt)
         val order = Order(
             id = orderId,
-            side = request.side ?: sideOf(request.type),
+            side = side,
             type = request.type,
             lots = FillEngine.roundLots(request.lots),
             price = request.price?.let { FillEngine.roundPrice(it) },
             sl = request.sl?.let { FillEngine.roundPrice(it) },
             tp = request.tp?.let { FillEngine.roundPrice(it) },
-            placedAtTs = histNow,
+            placedAtTs = placedAt,
             trailDistance = request.trailingDist,
+            queued = request.type == OrderType.MARKET && !marketOpen,
         )
-        val updated = FillEngine.placeOrder(state, order)
-        val next = updated.copy(nextPositionId = orderId + 1)
+        val next = if (request.type == OrderType.MARKET && marketOpen) {
+            FillEngine.fillMarketImmediately(state, order, if (side == Side.LONG) ask else bid, placedAt)
+        } else {
+            FillEngine.placeOrder(state, order).copy(nextPositionId = orderId + 1)
+        }
         persist(seasonId, next, tag = request.tag, note = request.note)
         return orderId
     }

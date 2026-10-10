@@ -45,30 +45,59 @@ class FillEngineTest {
     // --------------------------------------------------------------- market fills
 
     @Test
-    fun `market buy fills at ask on the next candle not the placing candle`() {
+    fun `market buy placed while open fills at once at the ask`() {
+        val order = Order(1, Side.LONG, OrderType.MARKET, 1.0, placedAtTs = T)
+        val s = FillEngine.fillMarketImmediately(state(10_000.0), order, price = 2000.30, atTs = T)
+
+        assertEquals(1, s.positions.size)
+        assertEquals(2000.30, s.positions[0].entryPrice, 1e-9) // ask
+        assertEquals(T, s.positions[0].openedAtTs)
+        assertTrue(s.orders.isEmpty())
+    }
+
+    @Test
+    fun `market sell placed while open fills at once at the bid`() {
+        val order = Order(2, Side.SHORT, OrderType.MARKET, 1.0, placedAtTs = T)
+        val s = FillEngine.fillMarketImmediately(state(10_000.0), order, price = 2000.00, atTs = T)
+
+        assertEquals(1, s.positions.size)
+        assertEquals(2000.00, s.positions[0].entryPrice, 1e-9) // bid
+        assertEquals(T, s.positions[0].openedAtTs)
+    }
+
+    @Test
+    fun `market order never fills on its own placing candle`() {
         val order = Order(1, Side.LONG, OrderType.MARKET, 1.0, placedAtTs = T)
         var s = FillEngine.placeOrder(state(10_000.0), order)
 
-        val c0 = candle(T, 2000.0, 2001.0, 1999.0, 2000.0)
-        val c1 = candle(T + MIN, 2000.0, 2001.0, 1999.0, 2000.5)
-
-        val r0 = FillEngine.processCandle(s, c0, noNews)
+        val r0 = FillEngine.processCandle(s, candle(T, 2000.0, 2001.0, 1999.0, 2000.0), noNews)
         assertTrue(r0.fills.isEmpty(), "order must not fill on the placing candle")
         s = r0.state
 
-        val r1 = FillEngine.processCandle(s, c1, noNews)
+        val r1 = FillEngine.processCandle(s, candle(T + MIN, 2000.0, 2001.0, 1999.0, 2000.5), noNews)
         assertEquals(1, r1.fills.size)
         assertEquals(2000.30, r1.fills[0].price, 1e-9) // open + normal spread
         assertEquals(1, r1.state.positions.size)
     }
 
     @Test
-    fun `market sell fills at bid on the next candle`() {
-        val order = Order(2, Side.SHORT, OrderType.MARKET, 1.0, placedAtTs = T)
-        var s = FillEngine.placeOrder(state(10_000.0), order)
-        s = FillEngine.processCandle(s, candle(T, 2000.0, 2001.0, 1999.0, 2000.0), noNews).state
+    fun `queued market order fills on the first candle after the reopen`() {
+        val order = Order(2, Side.LONG, OrderType.MARKET, 1.0, placedAtTs = T, queued = true)
+        val s = FillEngine.placeOrder(state(10_000.0), order)
         val r = FillEngine.processCandle(s, candle(T + MIN, 2000.0, 2001.0, 1999.0, 2000.0), noNews)
-        assertEquals(2000.00, r.fills[0].price, 1e-9) // bid, no spread added
+        assertEquals(1, r.fills.size)
+        assertEquals("QUEUED", r.fills[0].reason)
+        assertEquals(T + MIN, r.state.positions[0].openedAtTs)
+    }
+
+    @Test
+    fun `a fill is never stamped before its placement`() {
+        // The order is placed inside a candle: its placedAtTs is later than the candle open.
+        val order = Order(3, Side.LONG, OrderType.MARKET, 1.0, placedAtTs = T + 30_000L)
+        val s = FillEngine.placeOrder(state(10_000.0), order)
+        val r = FillEngine.processCandle(s, candle(T + MIN, 2000.0, 2001.0, 1999.0, 2000.0), noNews)
+        assertEquals(1, r.state.positions.size)
+        assertTrue(r.state.positions[0].openedAtTs >= order.placedAtTs)
     }
 
     // --------------------------------------------------------------- SL / TP

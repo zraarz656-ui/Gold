@@ -131,10 +131,10 @@ interface TradeOrderDao {
     @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId ORDER BY id ASC")
     fun bySeasonFlow(seasonId: Long): Flow<List<TradeOrder>>
 
-    @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status IN ('PENDING', 'OPEN') ORDER BY id ASC")
+    @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status IN ('PENDING', 'QUEUED', 'OPEN') ORDER BY id ASC")
     suspend fun live(seasonId: Long): List<TradeOrder>
 
-    @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status IN ('PENDING', 'OPEN') ORDER BY id ASC")
+    @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status IN ('PENDING', 'QUEUED', 'OPEN') ORDER BY id ASC")
     fun liveFlow(seasonId: Long): Flow<List<TradeOrder>>
 
     @Query("SELECT * FROM trade_order WHERE id = :id")
@@ -147,7 +147,7 @@ interface TradeOrderDao {
     suspend fun updateStops(id: Long, sl: Double?, tp: Double?)
 
     /** Drop the live rows before rewriting them from the engine projection. */
-    @Query("DELETE FROM trade_order WHERE seasonId = :seasonId AND status IN ('PENDING', 'OPEN')")
+    @Query("DELETE FROM trade_order WHERE seasonId = :seasonId AND status IN ('PENDING', 'QUEUED', 'OPEN')")
     suspend fun deleteLive(seasonId: Long)
 
     @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED' ORDER BY closedAt ASC, id ASC")

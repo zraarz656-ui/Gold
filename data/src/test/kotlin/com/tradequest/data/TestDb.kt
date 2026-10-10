@@ -40,3 +40,10 @@ object TestDb {
         }
     }
 }
+
+/**
+ * Test convenience mirroring the ViewModel's call into [TradingRepository.place]: use a
+ * fixed, deterministic bid/ask so snapshots stay comparable across runs.
+ */
+suspend fun TradingRepository.place(seasonId: Long, request: OrderRequest, histNow: Long): Long =
+    place(seasonId, request, placedAt = histNow, bid = 2400.00, ask = 2400.30)

@@ -71,4 +71,21 @@ class PositionsScreenTest {
         }
         compose.onNodeWithText("Placed $expected").assertIsDisplayed()
     }
+
+    @Test
+    fun queuedMarketOrderShowsFillsWhenMarketOpens() {
+        val queued = pending().copy(type = OrderType.MARKET, entryPrice = null, status = OrderStatus.QUEUED)
+        compose.setContent {
+            TradeQuestTheme(ChartTheme.DARK) {
+                PositionsScreen(
+                    orders = listOf(queued),
+                    bid = 2400.0,
+                    onClose = { _, _ -> },
+                    onCancel = {},
+                    onEditStops = { _, _, _ -> },
+                )
+            }
+        }
+        compose.onNodeWithText("Queued, fills when market opens").assertIsDisplayed()
+    }
 }

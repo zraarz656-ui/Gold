@@ -51,11 +51,18 @@ fun PositionsScreen(
     val c = tradeColors
     val open = orders.filter { it.status == OrderStatus.OPEN }
     val pending = orders.filter { it.status == OrderStatus.PENDING }
+    val queued = orders.filter { it.status == OrderStatus.QUEUED }
     CompositionLocalProvider(LocalContentColor provides c.onSurface) {
         LazyColumn(
             modifier.fillMaxSize().background(c.surface).padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (queued.isNotEmpty()) {
+                item { SectionHeader("Queued (fills when market opens)") }
+                items(queued, key = { "q-${it.id}" }) { o ->
+                    QueuedCard(o, displayOffsetMs, onCancel)
+                }
+            }
             item { SectionHeader("Open positions (${open.size})") }
             if (open.isEmpty()) item { EmptyRow("No open positions") }
             items(open, key = { "o-${it.id}" }) { o ->
@@ -168,6 +175,26 @@ private fun PendingCard(order: TradeOrder, displayOffsetMs: Long, onCancel: (Lon
                 color = c.warning, fontWeight = FontWeight.Bold, fontSize = 13.sp,
             )
             Text("pending", color = c.onSurfaceVariant, fontSize = 11.sp)
+        }
+        Text(
+            "SL ${order.sl?.let { "%.2f".format(it) } ?: "—"}   TP ${order.tp?.let { "%.2f".format(it) } ?: "—"}",
+            color = c.onSurfaceVariant, fontSize = 11.sp,
+        )
+        order.openedAt?.let { Text("Placed ${formatDateTime(it + displayOffsetMs)}", color = c.onSurfaceVariant, fontSize = 10.sp) }
+        OutlinedButton(onClick = { onCancel(order.id) }) { Text("Cancel") }
+    }
+}
+
+@Composable
+private fun QueuedCard(order: TradeOrder, displayOffsetMs: Long, onCancel: (Long) -> Unit) {
+    val c = tradeColors
+    Column(Modifier.fillMaxWidth().background(c.surfaceVariant).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                "${if (order.side == Side.LONG) "BUY" else "SELL"} ${"%.2f".format(order.lots)} @ market",
+                color = c.warning, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            )
+            Text("Queued, fills when market opens", color = c.onSurfaceVariant, fontSize = 11.sp)
         }
         Text(
             "SL ${order.sl?.let { "%.2f".format(it) } ?: "—"}   TP ${order.tp?.let { "%.2f".format(it) } ?: "—"}",

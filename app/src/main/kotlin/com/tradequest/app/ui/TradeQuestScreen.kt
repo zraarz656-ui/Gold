@@ -110,7 +110,9 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
         // Tabs, timeframes and the settings menu all share one row.
         TradeQuestHeader(
             tab = tab,
-            liveOrders = orders.count { it.status == OrderStatus.OPEN || it.status == OrderStatus.PENDING },
+            liveOrders = orders.count {
+                it.status == OrderStatus.OPEN || it.status == OrderStatus.PENDING || it.status == OrderStatus.QUEUED
+            },
             timeframe = controller.state.timeframe,
             onTab = { tab = it },
             onTimeframe = { viewModel.setTimeframe(it) },
@@ -460,7 +462,7 @@ private fun ClosedFooter(notice: ClosedNotice?) {
         }
     }
     val text = if (notice == null) {
-        "Market closed."
+        "Market closed. Market orders are queued and fill when the market opens."
     } else {
         val remaining = (notice.opensAtDisplayMs - now).coerceAtLeast(0L)
         val hours = remaining / 3_600_000L
@@ -468,7 +470,8 @@ private fun ClosedFooter(notice: ClosedNotice?) {
         val open = Instant.ofEpochMilli(notice.opensAtDisplayMs).atZone(ZoneId.systemDefault())
         val weekday = open.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
         val hm = String.format(java.util.Locale.US, "%02d:%02d", open.hour, open.minute)
-        "Market closed. Opens in ${hours}h ${minutes}m ($weekday $hm local)"
+        "Market closed. Opens in ${hours}h ${minutes}m ($weekday $hm local). " +
+            "Market orders are queued and fill when the market opens."
     }
     Text(
         text,
