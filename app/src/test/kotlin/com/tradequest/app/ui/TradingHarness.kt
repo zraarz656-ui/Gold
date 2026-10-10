@@ -35,6 +35,9 @@ class TradingHarness {
     val openNow: Long = Instant.parse("2026-07-01T12:00:00Z").toEpochMilli()
     val min = 60_000L
 
+    /** The replayed wall clock; a test may push it forward to replay later candles. */
+    var clockMs: Long = openNow
+
     lateinit var db: TradeQuestDatabase
     lateinit var candles: CandleRepository
     private lateinit var context: Context
@@ -56,7 +59,7 @@ class TradingHarness {
 
     fun buildViewModel(): TradingViewModel = TradingViewModel(
         db = db,
-        seasons = SeasonRepository(db) { openNow },
+        seasons = SeasonRepository(db) { clockMs },
         trading = TradingRepository(db),
         candles = CandleRepository(db).also { candles = it },
         settings = SettingsRepository(db),
