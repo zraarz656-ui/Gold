@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.time.Instant
+import java.time.ZoneId
 
 class ChartMathTest {
 
@@ -142,6 +144,64 @@ class ChartMathTest {
             assertTrue(x - lastX >= 64f - 1e-3f)
             lastX = x
         }
+    }
+
+    @Test
+    fun `time axis day boundary follows the display zone, not UTC (Kolkata)`() {
+        // Asia/Kolkata is UTC+05:30, so local midnight is 18:30Z. The old UTC rule flagged
+        // 00:00Z as the day boundary; it must now fall on the first bar at local 00:00.
+        val start = Instant.parse("2026-07-09T00:00:00Z").toEpochMilli()
+        val m1 = (0 until 1440).map { start + it * 60_000L } // one UTC day
+        val ticks = ChartMath.timeAxisTicks(
+            displayTs = m1,
+            visible = 0..1439,
+            timeframe = Timeframe.M1,
+            scrollIndex = 0f,
+            candleWidthPx = 10f,
+            minSpacingPx = 0f,
+            zone = ZoneId.of("Asia/Kolkata"),
+        )
+        val kolkata = ZoneId.of("Asia/Kolkata")
+        // Every eligible tick sits on a local quarter hour.
+        for (t in ticks) {
+            val z = Instant.ofEpochMilli(t.displayTs).atZone(kolkata)
+            assertTrue(z.minute % 15 == 0, "tick at $z must be on a local quarter hour")
+        }
+        // The single day boundary is local midnight = 18:30Z, not 00:00Z.
+        val boundaries = ticks.filter { it.isDayBoundary }
+        assertEquals(1, boundaries.size, "exactly one local midnight in a 24h window")
+        val b = Instant.ofEpochMilli(boundaries.single().displayTs).atZone(kolkata)
+        assertEquals(0, b.hour)
+        assertEquals(0, b.minute)
+        assertEquals(start + 18 * 60 * 60_000L + 30 * 60_000L, boundaries.single().displayTs)
+        assertTrue(!ticks.first().isDayBoundary, "00:00Z is a local quarter hour but not the day boundary")
+    }
+
+    @Test
+    fun `time axis day boundary follows the display zone, not UTC (New York)`() {
+        // America/New_York is UTC-04:00 (EDT) in July, so local midnight is 04:00Z.
+        val start = Instant.parse("2026-07-09T00:00:00Z").toEpochMilli()
+        val m1 = (0 until 1440).map { start + it * 60_000L }
+        val ticks = ChartMath.timeAxisTicks(
+            displayTs = m1,
+            visible = 0..1439,
+            timeframe = Timeframe.M1,
+            scrollIndex = 0f,
+            candleWidthPx = 10f,
+            minSpacingPx = 0f,
+            zone = ZoneId.of("America/New_York"),
+        )
+        val ny = ZoneId.of("America/New_York")
+        for (t in ticks) {
+            val z = Instant.ofEpochMilli(t.displayTs).atZone(ny)
+            assertTrue(z.minute % 15 == 0, "tick at $z must be on a local quarter hour")
+        }
+        val boundaries = ticks.filter { it.isDayBoundary }
+        assertEquals(1, boundaries.size, "exactly one local midnight in a 24h window")
+        val b = Instant.ofEpochMilli(boundaries.single().displayTs).atZone(ny)
+        assertEquals(0, b.hour)
+        assertEquals(0, b.minute)
+        assertEquals(start + 4 * 60 * 60_000L, boundaries.single().displayTs, "local midnight is 04:00Z")
     }
 
     @Test

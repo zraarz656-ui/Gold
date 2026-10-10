@@ -3,7 +3,7 @@ package com.tradequest.chart
 import com.tradequest.engine.Candle
 import com.tradequest.engine.Timeframe
 import java.time.Instant
-import java.time.ZoneOffset
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -319,6 +319,7 @@ object ChartMath {
         scrollIndex: Float,
         candleWidthPx: Float,
         minSpacingPx: Float,
+        zone: ZoneId = ZoneId.systemDefault(),
     ): List<TimeTick> {
         if (visible.isEmpty() || displayTs.isEmpty()) return emptyList()
         val intraday = timeframe == Timeframe.M1 || timeframe == Timeframe.M15 ||
@@ -328,7 +329,9 @@ object ChartMath {
         for (i in visible.first..visible.last) {
             if (i < 0 || i >= displayTs.size) continue
             val ts = displayTs[i]
-            val z = Instant.ofEpochMilli(ts).atZone(ZoneOffset.UTC)
+            // Tick placement follows the zone the labels are rendered in, so the drawn
+            // times are exactly :00/:15/:30/:45 (and midnight at the day boundary).
+            val z = Instant.ofEpochMilli(ts).atZone(zone)
             val isDayBoundary: Boolean
             val eligible: Boolean
             if (intraday) {
