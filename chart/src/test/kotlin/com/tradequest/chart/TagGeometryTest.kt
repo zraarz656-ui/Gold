@@ -59,7 +59,7 @@ class TagGeometryTest {
     @Test
     fun `a narrow gutter still fits the pill at its floor width`() {
         val screenWidth = 1080f
-        val plot = PlotRect(0f, 0f, screenWidth - 96f, 600f)
+        val plot = PlotRect(0f, 0f, screenWidth - 60f, 600f)
         val rect = TagGeom.priceTag(screenWidth, plot, 300f, density, scale)
         assertEquals(screenWidth - LevelGeometry.PRICE_TAG_WIDTH_DP, rect.left, 1e-4f)
     }

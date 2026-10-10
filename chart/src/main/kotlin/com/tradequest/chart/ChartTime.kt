@@ -34,6 +34,14 @@ fun formatDateTime(ts: Long, zone: ZoneId = ZoneId.systemDefault()): String {
 fun formatShortDateTime(ts: Long, zone: ZoneId = ZoneId.systemDefault()): String =
     Instant.ofEpochMilli(ts).atZone(zone).format(SHORT)
 
+/** `mm:ss` remaining until the current candle closes, clamped at zero. */
+fun formatCountdown(remainingMs: Long): String {
+    val total = (remainingMs.coerceAtLeast(0L) + 999L) / 1000L
+    val minutes = total / 60
+    val seconds = total % 60
+    return String.format(Locale.US, "%02d:%02d", minutes, seconds)
+}
+
 private val DAY_MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM dd", Locale.US)
 private val SHORT: DateTimeFormatter = DateTimeFormatter.ofPattern("dd MMM HH:mm", Locale.US)
 

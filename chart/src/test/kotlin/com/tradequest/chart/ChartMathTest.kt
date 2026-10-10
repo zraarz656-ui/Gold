@@ -34,10 +34,51 @@ class ChartMathTest {
     }
 
     @Test
-    fun `clamp scroll keeps the live edge within padding`() {
-        val clamped = ChartMath.clampScroll(1000f, plotWidth = 100f, candleWidthPx = 10f, candleCount = 50, rightPaddingCandles = 6f)
-        // visible = 10 bars; maxScroll = 50 + 6 - 10 = 46
-        assertEquals(46f, clamped, 1e-3f)
+    fun `clamp scroll allows scrolling past the newest candle up to the max padding`() {
+        // visible = 10 bars; base = 49 - 10 = 39; max pad = 60% of 10 = 6, floored to the
+        // default 10, so the reachable window is 29..49.
+        val clamped = ChartMath.clampScroll(
+            1000f, plotWidth = 100f, candleWidthPx = 10f, candleCount = 50,
+            defaultRightPaddingCandles = 10f, maxRightPaddingCandles = 10f,
+        )
+        assertEquals(49f, clamped, 1e-3f)
+    }
+
+    @Test
+    fun `clamp scroll stops at the oldest candle for a long series`() {
+        // visible = 100 bars over 1000 candles: base = 999 - 100 = 899, default pad = 120.
+        val clamped = ChartMath.clampScroll(
+            -500f, plotWidth = 1000f, candleWidthPx = 10f, candleCount = 1000,
+            defaultRightPaddingCandles = 120f, maxRightPaddingCandles = 600f,
+        )
+        assertEquals(0f, clamped, 1e-3f)
+    }
+
+    @Test
+    fun `a handful of candles is parked on the right, never clipped at the left`() {
+        for (count in intArrayOf(1, 2, 5)) {
+            val visible = ChartMath.visibleCandles(1000f, 10f) // 100
+            val default = ChartMath.defaultRightPadding(visible)
+            val liveEdge = ChartMath.liveEdgeScroll(1000f, 10f, count)
+            // The default live-edge position is preserved by the clamp (not pushed off it).
+            val clamped = ChartMath.clampScroll(
+                liveEdge, plotWidth = 1000f, candleWidthPx = 10f, candleCount = count,
+                defaultRightPaddingCandles = default, maxRightPaddingCandles = ChartMath.maxRightPadding(visible),
+            )
+            assertEquals(liveEdge, clamped, 1e-3f)
+            val lastX = ChartMath.indexToX((count - 1).toFloat(), Viewport(clamped, 10f))
+            assertEquals(1000f - default * 10f, lastX, 1e-3f)
+            val firstX = ChartMath.indexToX(0f, Viewport(clamped, 10f))
+            assertTrue(firstX > 0f, "count=$count firstX=$firstX should be to the right")
+        }
+    }
+
+    @Test
+    fun `the live edge keeps the default padding, the far end the max padding`() {
+        val visible = ChartMath.visibleCandles(1000f, 10f) // 100
+        assertEquals(10f, ChartMath.defaultRightPadding(50f), 1e-3f) // floor
+        assertEquals(12f, ChartMath.defaultRightPadding(visible), 1e-3f) // 12% of 100
+        assertEquals(60f, ChartMath.maxRightPadding(visible), 1e-3f) // 60% of 100
     }
 
     @Test

@@ -2,17 +2,17 @@ package com.tradequest.chart
 
 /**
  * The width of the right-hand price gutter. It is measured from the widest label the gutter
- * must hold (the current-price pill, the grid ticks and the crosshair tag) plus padding, so
- * the current-price pill always fits and nothing spills past the screen edge.
+ * must hold (the current-price tag, the grid ticks and the crosshair tag) plus padding, so
+ * the current-price tag always fits and nothing spills past the screen edge.
  *
- * The padding is [PAD_DP] on each side, so the gutter is the widest label plus 12dp — the
- * same 12dp the current-price pill adds around its own text. Pure given a text measurer, so
- * "the pill fits the gutter" is asserted in tests.
+ * The padding is [PAD_DP] on each side, so the gutter is the widest label plus 8dp — the
+ * same 8dp the slim current-price tag adds around its own text. Pure given a text measurer,
+ * so "the tag fits the gutter" is asserted in tests.
  */
 object ChartGutter {
 
-    /** Breathing room kept on each side of the widest label; 2 x 6dp = 12dp of padding. */
-    const val PAD_DP = LevelGeometry.TAG_PAD_DP
+    /** Breathing room kept on each side of the widest label; 2 x 4dp = 8dp of padding. */
+    const val PAD_DP = 4f
 
     /** A floor so a very short price still leaves a usable gutter. */
     const val MIN_WIDTH_DP = 56f
@@ -27,6 +27,6 @@ object ChartGutter {
         return maxOf(widest + 2f * PAD_DP * density, minPx)
     }
 
-    /** The text sizes the gutter must accommodate: the pill (15sp) and a grid tick (12sp). */
-    fun sampleSizes(scale: Float): Pair<Float, Float> = 15f * scale to 12f * scale
+    /** The text sizes the gutter must accommodate: the tag (12sp) and a grid tick (12sp). */
+    fun sampleSizes(scale: Float): Pair<Float, Float> = 12f * scale to 12f * scale
 }

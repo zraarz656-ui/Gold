@@ -39,6 +39,10 @@ data class ChartState(
     val liveEdgeFollowing: Boolean = true,
     val overlay: ChartOverlayState = ChartOverlayState(),
     val marketClosed: Boolean = false,
+    /** Milliseconds until the current candle closes; null hides the countdown. */
+    val countdownMs: Long? = null,
+    /** Whether the candle-close countdown under the price tag is drawn (settings toggle). */
+    val showCountdown: Boolean = true,
     /** The line being dragged, drawn at the finger's price instead of its committed price. */
     val dragPreview: DragPreview? = null,
     /** How large the price tags are drawn; persisted in DataStore. */

@@ -25,15 +25,18 @@ object LevelGeometry {
     /** Smallest an order tag may shrink to, so a glyph plus its padding always fit. */
     const val MIN_ORDER_TAG_WIDTH_DP = 44f
 
-    /** Tag height; also the line's touch target half-height. */
-    const val TAG_HEIGHT_DP = 24f
+    /** Tag height for every tag (order tags and the slim current-price tag). */
+    const val TAG_HEIGHT_DP = 22f
 
     /** The tappable "x" box at the tag's right edge. */
     const val CLOSE_BOX_DP = 24f
 
-    /** The current-price / crosshair tag: fits "1234.56" at 15sp bold. */
-    const val PRICE_TAG_WIDTH_DP = 104f
-    const val PRICE_TAG_HEIGHT_DP = 28f
+    /** The current-price / crosshair tag: fits "1234.56" at 12sp semibold. */
+    const val PRICE_TAG_WIDTH_DP = 80f
+    const val PRICE_TAG_HEIGHT_DP = 22f
+
+    /** The notch on the current-price tag that points at the price line. */
+    const val PRICE_TAG_NOTCH_DP = 5f
 
     /** The "+SL"/"+TP" handle, at the plot's right edge. */
     const val HANDLE_WIDTH_DP = 40f
@@ -42,8 +45,8 @@ object LevelGeometry {
     /** Inner padding of a tag, from the fill to the text. */
     const val TAG_PAD_DP = 6f
 
-    /** Corner radius of every tag pill. */
-    const val TAG_RADIUS_DP = 6f
+    /** Corner radius of every tag pill: the slim 4dp radius. */
+    const val TAG_RADIUS_DP = 4f
 
     /** The order-tag text size, matching the renderer. */
     const val ORDER_TAG_SP = 12f
@@ -55,6 +58,7 @@ object LevelGeometry {
     fun closeBox(density: Float, scale: Float): Float = CLOSE_BOX_DP * density * scale
     fun priceTagWidth(density: Float, scale: Float): Float = PRICE_TAG_WIDTH_DP * density * scale
     fun priceTagHeight(density: Float, scale: Float): Float = PRICE_TAG_HEIGHT_DP * density * scale
+    fun priceTagNotch(density: Float, scale: Float): Float = PRICE_TAG_NOTCH_DP * density * scale
     fun handleWidth(density: Float, scale: Float): Float = HANDLE_WIDTH_DP * density * scale
     fun handleHeight(density: Float, scale: Float): Float = HANDLE_HEIGHT_DP * density * scale
 

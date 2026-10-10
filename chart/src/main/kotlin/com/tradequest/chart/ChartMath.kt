@@ -126,18 +126,64 @@ object ChartMath {
         return maxOf(0, first)..minOf(candleCount - 1, last)
     }
 
+    /** Minimum empty space kept to the right of the newest candle, in candles. */
+    const val DEFAULT_RIGHT_PADDING_CANDLES = 10f
+
+    /** Default right padding as a share of the plot width, in candles. */
+    const val DEFAULT_RIGHT_PADDING_FRACTION = 0.12f
+
+    /** The furthest right the view may scroll: 60% of the plot width of empty space. */
+    const val MAX_RIGHT_PADDING_FRACTION = 0.60f
+
+    /**
+     * The live-edge right padding in candles: at least [DEFAULT_RIGHT_PADDING_CANDLES], or
+     * [DEFAULT_RIGHT_PADDING_FRACTION] of the visible width when that is larger.
+     */
+    fun defaultRightPadding(visibleCandles: Float): Float =
+        maxOf(DEFAULT_RIGHT_PADDING_CANDLES, DEFAULT_RIGHT_PADDING_FRACTION * visibleCandles)
+
+    /**
+     * The maximum right padding in candles: at least the default padding, so the live edge
+     * is always reachable, and [MAX_RIGHT_PADDING_FRACTION] of the width otherwise. The two
+     * only conflict when fewer than about 17 candles fit, where the default is the floor.
+     */
+    fun maxRightPadding(visibleCandles: Float): Float =
+        maxOf(MAX_RIGHT_PADDING_FRACTION * visibleCandles, defaultRightPadding(visibleCandles))
+
+    /** Candles that fit across the plot at the current bar width. */
+    fun visibleCandles(plotWidth: Float, candleWidthPx: Float): Float =
+        if (candleWidthPx <= 0f) 1f else plotWidth / candleWidthPx
+
+    /** The scroll index that parks the newest candle at the default live-edge padding. */
+    fun liveEdgeScroll(plotWidth: Float, candleWidthPx: Float, candleCount: Int): Float {
+        if (candleCount <= 0) return 0f
+        val visible = visibleCandles(plotWidth, candleWidthPx)
+        return (candleCount - 1) - visible + defaultRightPadding(visible)
+    }
+
+    /**
+     * Clamp the horizontal scroll to the reachable window.
+     *
+     * The right end leaves up to [maxRightPadding] candles of empty space past the newest
+     * candle (so the user can scroll past the live edge). The left end is the oldest data
+     * at the plot's left edge; with fewer candles than fit, the whole run is parked on the
+     * right instead, so a handful of candles is never clipped at the left border.
+     */
     fun clampScroll(
         scrollIndex: Float,
         plotWidth: Float,
         candleWidthPx: Float,
         candleCount: Int,
-        rightPaddingCandles: Float,
+        defaultRightPaddingCandles: Float,
+        maxRightPaddingCandles: Float,
     ): Float {
         if (candleCount <= 0) return scrollIndex
-        val visible = plotWidth / candleWidthPx
-        val maxScroll = (candleCount + rightPaddingCandles) - visible
-        val minScroll = -rightPaddingCandles
-        return scrollIndex.coerceIn(minScroll, maxOf(maxScroll, minScroll))
+        val visible = visibleCandles(plotWidth, candleWidthPx)
+        val base = (candleCount - 1) - visible
+        val sDefault = base + defaultRightPaddingCandles
+        val sMax = base + maxRightPaddingCandles
+        val sMin = minOf(0f, sDefault)
+        return scrollIndex.coerceIn(sMin, maxOf(sMax, sMin))
     }
 
     fun zoomAnchor(scrollIndex: Float, pivotX: Float, oldWidth: Float, newWidth: Float): Float {

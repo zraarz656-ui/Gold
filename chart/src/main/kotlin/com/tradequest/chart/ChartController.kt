@@ -60,14 +60,21 @@ class ChartController(
         }
     }
 
-    private fun visibleCandles(): Float = plotWidthPx / state.viewport.candleWidthPx
+    private fun visibleCandles(): Float = ChartMath.visibleCandles(plotWidthPx, state.viewport.candleWidthPx)
 
-    private fun rightPaddingCandles(): Float = RIGHT_PADDING_CANDLES
+    private fun defaultRightPadding(): Float = ChartMath.defaultRightPadding(visibleCandles())
+
+    private fun maxRightPadding(): Float = ChartMath.maxRightPadding(visibleCandles())
+
+    private fun clampScroll(scrollIndex: Float) = ChartMath.clampScroll(
+        scrollIndex, plotWidthPx, state.viewport.candleWidthPx, state.barCount,
+        defaultRightPadding(), maxRightPadding(),
+    )
 
     fun jumpToLatest() {
-        val scroll = (state.barCount - visibleCandles()) + rightPaddingCandles()
+        val scroll = ChartMath.liveEdgeScroll(plotWidthPx, state.viewport.candleWidthPx, state.barCount)
         state = state.copy(
-            viewport = state.viewport.copy(scrollIndex = maxOf(0f, scroll)),
+            viewport = state.viewport.copy(scrollIndex = clampScroll(scroll)),
             liveEdgeFollowing = true,
         )
         pendingNewCandles = 0
@@ -76,16 +83,15 @@ class ChartController(
     private fun atLiveEdge(): Boolean = atLiveEdge(state.viewport.scrollIndex)
 
     private fun atLiveEdge(scrollIndex: Float): Boolean {
-        val maxScroll = (state.barCount - visibleCandles()) + rightPaddingCandles()
-        return scrollIndex >= maxScroll - 1.5f
+        val liveEdge = ChartMath.liveEdgeScroll(plotWidthPx, state.viewport.candleWidthPx, state.barCount)
+        // A narrow band around the live-edge position: scrolling past it (into the empty
+        // right-hand space) stops the chart following new candles.
+        return kotlin.math.abs(scrollIndex - liveEdge) <= 1.5f
     }
 
     fun pan(dxPx: Float) {
         val idxDelta = dxPx / state.viewport.candleWidthPx
-        val raw = state.viewport.scrollIndex + idxDelta
-        val clamped = ChartMath.clampScroll(
-            raw, plotWidthPx, state.viewport.candleWidthPx, state.barCount, rightPaddingCandles(),
-        )
+        val clamped = clampScroll(state.viewport.scrollIndex + idxDelta)
         val following = atLiveEdge(clamped)
         state = state.copy(
             viewport = state.viewport.copy(scrollIndex = clamped),
@@ -101,10 +107,13 @@ class ChartController(
         val newWidth = (old * scale).coerceIn(minPx, maxPx)
         if (newWidth == old) return
         val scroll = ChartMath.zoomAnchor(state.viewport.scrollIndex, pivotX, old, newWidth)
+        val vp = state.viewport.copy(candleWidthPx = newWidth)
+        val visible = ChartMath.visibleCandles(plotWidthPx, newWidth)
         val clamped = ChartMath.clampScroll(
-            scroll, plotWidthPx, newWidth, state.barCount, rightPaddingCandles(),
+            scroll, plotWidthPx, newWidth, state.barCount,
+            ChartMath.defaultRightPadding(visible), ChartMath.maxRightPadding(visible),
         )
-        state = state.copy(viewport = state.viewport.copy(scrollIndex = clamped, candleWidthPx = newWidth))
+        state = state.copy(viewport = vp.copy(scrollIndex = clamped))
         barWidthDp = newWidth / density
         state = state.copy(liveEdgeFollowing = atLiveEdge())
     }
@@ -139,9 +148,7 @@ class ChartController(
         val times = state.bars.map { it.ts + state.displayOffsetMs }
         val idx = ChartMath.fractionalIndex(times, timeMs)
         val scroll = idx - visibleCandles() / 2f
-        val clamped = ChartMath.clampScroll(
-            scroll, plotWidthPx, state.viewport.candleWidthPx, state.barCount, rightPaddingCandles(),
-        )
+        val clamped = clampScroll(scroll)
         state = state.copy(
             viewport = state.viewport.copy(scrollIndex = clamped),
             liveEdgeFollowing = atLiveEdge(),
@@ -352,7 +359,23 @@ class ChartController(
     }
 
     fun setMarketClosed(closed: Boolean) {
-        if (state.marketClosed != closed) state = state.copy(marketClosed = closed)
+        if (state.marketClosed != closed) {
+            state = state.copy(
+                marketClosed = closed,
+                // No candle is forming while the market is shut, so hide the countdown.
+                countdownMs = if (closed) null else state.countdownMs,
+            )
+        }
+    }
+
+    /** Milliseconds until the current candle closes; null hides the countdown. */
+    fun setCountdown(ms: Long?) {
+        if (state.countdownMs != ms) state = state.copy(countdownMs = ms)
+    }
+
+    /** Show or hide the candle-close countdown under the price tag. */
+    fun setShowCountdown(on: Boolean) {
+        if (state.showCountdown != on) state = state.copy(showCountdown = on)
     }
 
     /** Bar index of the bar opening at [ts], or -1 when outside the visible series. */
@@ -377,8 +400,6 @@ class ChartController(
     }
 
     companion object {
-        const val RIGHT_PADDING_CANDLES = 6f
-
         fun spanMs(tf: Timeframe): Long = when (tf) {
             Timeframe.M1 -> 60_000L
             Timeframe.M15 -> 900_000L

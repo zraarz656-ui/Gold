@@ -72,9 +72,9 @@ fun CandleChart(
             ).size.width.toFloat()
         }
     }
-    // The right gutter is measured from the widest price text the pill must hold — the last
-    // close and the visible range's extremes, so the pill fits at any live price — plus 12dp
-    // (6dp each side). Keyed on the labels so a same-width tick does not restart the loop.
+    // The right gutter is measured from the widest price text the tag must hold — the last
+    // close and the visible range's extremes, so the tag fits at any live price — plus 8dp
+    // (4dp each side). Keyed on the labels so a same-width tick does not restart the loop.
     val lastClose = controller.state.bars.lastOrNull()?.c ?: 0.0
     val priceRange = controller.currentPriceRange()
     val priceLabels = listOf(lastClose, priceRange.min, priceRange.max).map { formatPrice(it) }

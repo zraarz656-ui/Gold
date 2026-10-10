@@ -33,11 +33,14 @@ object GestureMath {
         dxPx: Float,
         plotWidthPx: Float,
         barCount: Int,
-        rightPaddingCandles: Float = 6f,
     ): Viewport {
         val idxDelta = -dxPx / viewport.candleWidthPx
         val raw = viewport.scrollIndex + idxDelta
-        val clamped = ChartMath.clampScroll(raw, plotWidthPx, viewport.candleWidthPx, barCount, rightPaddingCandles)
+        val visible = ChartMath.visibleCandles(plotWidthPx, viewport.candleWidthPx)
+        val clamped = ChartMath.clampScroll(
+            raw, plotWidthPx, viewport.candleWidthPx, barCount,
+            ChartMath.defaultRightPadding(visible), ChartMath.maxRightPadding(visible),
+        )
         return viewport.copy(scrollIndex = clamped)
     }
 
@@ -48,7 +51,6 @@ object GestureMath {
         densityPx: Float,
         plotWidthPx: Float,
         barCount: Int,
-        rightPaddingCandles: Float = 6f,
     ): Viewport {
         if (zoom == 0f) return viewport
         val minPx = densityPx * ChartMath.MIN_CANDLE_WIDTH_DP
@@ -56,7 +58,11 @@ object GestureMath {
         val newWidth = (viewport.candleWidthPx * zoom).coerceIn(minPx, maxPx)
         if (newWidth == viewport.candleWidthPx) return viewport
         val scroll = ChartMath.zoomAnchor(viewport.scrollIndex, pivotX, viewport.candleWidthPx, newWidth)
-        val clamped = ChartMath.clampScroll(scroll, plotWidthPx, newWidth, barCount, rightPaddingCandles)
+        val visible = ChartMath.visibleCandles(plotWidthPx, newWidth)
+        val clamped = ChartMath.clampScroll(
+            scroll, plotWidthPx, newWidth, barCount,
+            ChartMath.defaultRightPadding(visible), ChartMath.maxRightPadding(visible),
+        )
         return viewport.copy(scrollIndex = clamped, candleWidthPx = newWidth)
     }
 

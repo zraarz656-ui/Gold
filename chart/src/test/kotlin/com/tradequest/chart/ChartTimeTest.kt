@@ -49,4 +49,13 @@ class ChartTimeTest {
         val ts = 1_704_164_640_000L
         assertEquals("02 Jan 08:34", formatShortDateTime(ts, kolkata))
     }
+
+    @Test
+    fun `the countdown is mm ss and rounds up to the next whole second`() {
+        assertEquals("00:10", formatCountdown(10_000L))
+        assertEquals("00:59", formatCountdown(58_001L))
+        assertEquals("04:00", formatCountdown(240_000L))
+        assertEquals("00:00", formatCountdown(0L))
+        assertEquals("00:00", formatCountdown(-500L))
+    }
 }

@@ -25,8 +25,14 @@ const val TIME_LABEL_MIN_GAP_DP = 64.0f
 /** Order tags must stay readable on their fill in all four themes. */
 private const val ORDER_TAG_MIN_CONTRAST = 4.5
 
-/** The current-price tag is large and bold, per the visual spec. */
-private const val CURRENT_PRICE_TAG_SP = 15f
+/** The current-price tag is slim and semibold, per the visual spec. */
+private const val CURRENT_PRICE_TAG_SP = 12f
+
+/** The candle-close countdown under the tag. */
+private const val COUNTDOWN_SP = 9f
+
+/** The current-price line is a 1dp dotted line at this opacity. */
+private const val CURRENT_PRICE_LINE_OPACITY = 0.6f
 
 /** Plot rectangle + resolved price range + visible bar window for one frame. */
 fun geometryFor(state: ChartState, sizePx: Size, axisWidthPx: Float, bottomAxisPx: Float): ChartGeometry {
@@ -113,7 +119,7 @@ fun DrawScope.drawChart(
 
     // The crosshair tag (finger) is drawn first; the current-price tag is drawn last so it
     // is never hidden, even when the crosshair sits on the same price, and always over every
-    // order tag. The pill fills the gutter, which is measured from the widest price text.
+    // order tag. The tag fills the measured gutter and carries a notch at the price line.
     if (crosshairY != null) {
         val inverted = TagStyle.invertedTag(theme)
         val price = ChartMath.yToPrice(crosshairY, geo.priceRange, plot)
@@ -125,7 +131,18 @@ fun DrawScope.drawChart(
     }
     if (last != null && currentY != null) {
         val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale, measure.width(formatPrice(last.c), CURRENT_PRICE_TAG_SP * scale))
-        drawPriceLabel(textMeasurer, rect, currentColor, last.c, scale, theme, textSizeSp = CURRENT_PRICE_TAG_SP)
+        drawCurrentPriceTag(state, geo, textMeasurer, rect, currentColor, last.c, currentY, lastUp, scale)
+
+        // The candle-close countdown sits just under the tag, in muted text.
+        val countdown = state.countdownMs
+        if (state.showCountdown && countdown != null && countdown >= 0) {
+            val text = formatCountdown(countdown)
+            val muted = if (theme.isLight) Color(0xFF5A6472) else Color(0xFF8A94A6)
+            val measured = textMeasurer.measure(text, TextStyle(muted, (COUNTDOWN_SP * scale).sp, FontWeight.Medium))
+            val cx = rect.centerX - measured.size.width / 2f
+            val cy = rect.bottom + 2f * density
+            drawText(measured, topLeft = Offset(cx, cy))
+        }
     }
 
     // The magnified price bubble follows the finger, so it is drawn last and unclipped.
@@ -396,13 +413,64 @@ private fun DrawScope.drawMarker(x: Float, y: Float, entry: Boolean, long: Boole
     drawPath(path, if (long) Color(0xFF26A69A) else Color(0xFFEF5350))
 }
 
-/** The current-price line: solid, in the up/down colour, with its label in the gutter clip. */
+/** The current-price line: a 1dp dotted line at 60% opacity, in the up/down colour. */
 private fun DrawScope.drawCurrentPriceLine(state: ChartState, geo: ChartGeometry) {
     val last = state.bars.lastOrNull() ?: return
     val y = ChartMath.priceToY(last.c, geo.priceRange, geo.plot)
     val color = TagStyle.currentPriceFill(state.theme, last.c >= last.o)
-    drawLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), 1.5f)
+        .copy(alpha = CURRENT_PRICE_LINE_OPACITY)
+    drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), width = 1f, dash = 4f, gap = 3f)
 }
+
+/**
+ * The slim current-price tag: a 22dp, 4dp-radius, 12sp semibold label filling the gutter,
+ * with a small notch on its left edge pointing at the price line, and a small dot at the
+ * last candle's close. Drawn last so nothing covers it.
+ */
+private fun DrawScope.drawCurrentPriceTag(
+    state: ChartState,
+    geo: ChartGeometry,
+    textMeasurer: TextMeasurer,
+    rect: TagRect,
+    color: Color,
+    price: Double,
+    lineY: Float,
+    up: Boolean,
+    scale: Float,
+) {
+    val theme = state.theme
+    drawTagBox(rect, color, theme, density)
+
+    // The notch on the left edge, pointing at the price line.
+    val notch = LevelGeometry.priceTagNotch(density, scale)
+    val ny = lineY.coerceIn(rect.top + 2f, rect.bottom - 2f)
+    val path = Path().apply {
+        moveTo(rect.left, ny - notch)
+        lineTo(rect.left - notch, ny)
+        lineTo(rect.left, ny + notch)
+        close()
+    }
+    drawPath(path, color)
+
+    // The text, semibold, centred in the tag.
+    val textColor = TagStyle.textOn(color)
+    val measured = textMeasurer.measure(
+        formatPrice(price),
+        TextStyle(textColor, (CURRENT_PRICE_TAG_SP * scale).sp, FontWeight.SemiBold),
+    )
+    val tx = rect.left + (rect.width - measured.size.width) / 2f
+    val ty = rect.centerY - measured.size.height / 2f
+    drawText(measured, topLeft = Offset(tx, ty))
+
+    // A small dot at the last candle's close, in the up/down colour.
+    val last = state.bars.lastOrNull() ?: return
+    val x = ChartMath.indexToX(lastIndex(state).toFloat(), state.viewport)
+        .coerceIn(geo.plot.left, geo.plot.right)
+    val dotColor = TagStyle.candleColor(theme, up = last.c >= last.o)
+    drawCircle(dotColor, radius = 3f * density, center = Offset(x, lineY))
+}
+
+private fun lastIndex(state: ChartState): Int = maxOf(0, state.bars.size - 1)
 
 private fun DrawScope.drawCrosshair(
     state: ChartState,
@@ -416,7 +484,14 @@ private fun DrawScope.drawCrosshair(
     drawDashedLine(theme.crosshair, Offset(geo.plot.left, cy), Offset(geo.plot.right, cy))
 }
 
-private fun DrawScope.drawDashedLine(color: Color, a: Offset, b: Offset) {
+private fun DrawScope.drawDashedLine(
+    color: Color,
+    a: Offset,
+    b: Offset,
+    width: Float = 1f,
+    dash: Float = 6f,
+    gap: Float = 5f,
+) {
     val dx = b.x - a.x
     val dy = b.y - a.y
     val len = hypot(dx, dy)
@@ -425,9 +500,9 @@ private fun DrawScope.drawDashedLine(color: Color, a: Offset, b: Offset) {
     val uy = dy / len
     var t = 0f
     while (t < len) {
-        val end = min(t + 6f, len)
-        drawLine(color, Offset(a.x + ux * t, a.y + uy * t), Offset(a.x + ux * end, a.y + uy * end), 1f)
-        t += 6f + 5f
+        val end = min(t + dash, len)
+        drawLine(color, Offset(a.x + ux * t, a.y + uy * t), Offset(a.x + ux * end, a.y + uy * end), width)
+        t += dash + gap
     }
 }
 
