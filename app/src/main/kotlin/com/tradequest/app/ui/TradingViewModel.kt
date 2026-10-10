@@ -152,9 +152,10 @@ class TradingViewModel @Inject constructor(
     val quote: StateFlow<Quote> = _quote.asStateFlow()
 
     /**
-     * Screen-only quote: the same bid/ask as [quote] but with the bid smoothed along the
-     * forming candle's deterministic display path. Buy/Sell buttons and the equity strip
-     * read this; fills and P&L read [quote], the real closed candle.
+     * Screen-only quote: the same spread as [quote] but with the bid walked around the last
+     * CLOSED candle's close. Buy/Sell buttons and the equity strip read this; fills, SL/TP
+     * and P&L read the completed candle, never the walk. The forming minute's high, low and
+     * close are never read.
      */
     private val _displayQuote = MutableStateFlow(Quote(0.0, 0.0, 0.0))
     val displayQuote: StateFlow<Quote> = _displayQuote.asStateFlow()
@@ -225,11 +226,12 @@ class TradingViewModel @Inject constructor(
     private val _displayOffsetMs = MutableStateFlow(0L)
     val displayOffsetMs: StateFlow<Long> = _displayOffsetMs.asStateFlow()
 
-    /** The candle the display path walks (the minute forming at the replayed clock). */
+    /**
+     * The last CLOSED candle the display path walks. The forming candle is deliberately not
+     * used: the screen must not reveal its high, low or close. Never used for fills or P&L.
+     */
     @Volatile
-    private var displayCandle: Candle? = null
-    @Volatile
-    private var displayCandleHistNow: Long = 0L
+    private var displayClosed: Candle? = null
 
     private var displayJob: kotlinx.coroutines.Job? = null
 
@@ -245,7 +247,10 @@ class TradingViewModel @Inject constructor(
     @Volatile
     private var displayPriceCache: Double? = null
 
-    /** The active season, cached so the display ticker can re-derive `histNow` cheaply. */
+    /**
+     * The active season, cached so the display ticker can re-derive `histNow` cheaply.
+     * Display only; never used for fills or P&L.
+     */
     @Volatile
     private var activeSeason: Season? = null
 
@@ -342,9 +347,10 @@ class TradingViewModel @Inject constructor(
     // ------------------------------------------------------- display (visual only)
 
     /**
-     * Four updates a second, walking the forming candle's deterministic display path. This
+     * Four updates a second, walking a random path bounded by the last CLOSED candle. This
      * is purely cosmetic: it only paints the price line/tag and the Buy/Sell/equity labels.
-     * No order, fill, SL/TP trigger or P&L ever reads these values.
+     * Because it reads no value from the forming candle, it cannot reveal the future. No
+     * order, fill, SL/TP trigger or P&L ever reads these values.
      */
     private fun startDisplayTicker() {
         if (displayJob?.isActive == true) return
@@ -356,35 +362,55 @@ class TradingViewModel @Inject constructor(
         }
     }
 
-    /** Recompute the screen-only price from the forming candle and the replayed clock. */
+    /** Recompute the screen-only price from the last closed candle and the replayed clock. */
     private fun publishDisplayTick() {
-        val candle = displayCandle
-        val season = activeSeason
-        val now = if (season != null) seasons.histNow(season) else displayCandleHistNow
-        val closed = now > 0L && isMarketClosed(now)
-        val price = if (candle == null || closed) null
-        else LiveDisplayPath.valueAt(candle, now - candle.ts.toDouble())
-        displayPriceCache = price
-
-        controller.setDisplayPrice(price)
         val base = _quote.value
         // Until the authoritative quote is live we have no spread to mirror; leave the
         // screen-only quote alone rather than publishing one with a zero spread.
         if (base.bid <= 0.0) return
-        _displayQuote.value = if (price == null) base
-        else Quote(bid = price, ask = price + base.spread, spread = base.spread)
-        _displayStrip.value = recomputeStrip(_displayStrip.value, price ?: base.bid)
+        val price = displayPathPrice()
+        displayPriceCache = price
+        controller.setDisplayPrice(price)
+        _displayQuote.value = displayQuoteFrom(price, base)
+        // Seed from the AUTHORITATIVE strip so the balance, day-start and order counts are
+        // always correct; only the market fields follow the display price. Seeding from the
+        // display strip itself would let a tick that lands before the first authoritative
+        // refresh freeze the balance at its zero initial value.
+        _displayStrip.value = recomputeStrip(_strip.value, price ?: base.bid)
     }
+
+    /**
+     * The smoothed price for the current instant, or null when the market is shut or there is
+     * no closed candle yet. It is a random walk around the last CLOSED candle's close; the
+     * forming minute's high, low and close are never read.
+     */
+    private fun displayPathPrice(): Double? {
+        val candle = displayClosed ?: return null
+        val now = _histNow.value
+        if (now <= 0L || isMarketClosed(now)) return null
+        // The walk spans the minute that FOLLOWS the last closed candle; that minute begins
+        // one minute after the candle's timestamp.
+        val minuteStart = candle.ts + CandleRepository.MINUTE_MS
+        return LiveDisplayPath.valueAt(candle, (now - minuteStart).toDouble())
+    }
+
+    /** The screen-only quote: the walk's [price] carries the authoritative spread. */
+    private fun displayQuoteFrom(price: Double?, base: Quote): Quote =
+        if (price == null || base.bid <= 0.0) base
+        else Quote(bid = price, ask = price + base.spread, spread = base.spread)
 
     /**
      * Re-point the screen-only quote/strip at the last display value after the authoritative
      * candle advanced, without waiting for the next display tick.
      */
     private fun syncDisplayQuote() {
-        val price = displayPriceCache
         val base = _quote.value
-        _displayQuote.value = if (price == null) base
-        else Quote(bid = price, ask = price + base.spread, spread = base.spread)
+        if (base.bid <= 0.0) {
+            _displayQuote.value = base
+            return
+        }
+        val price = displayPriceCache
+        _displayQuote.value = displayQuoteFrom(price, base)
         _displayStrip.value = recomputeStrip(_strip.value, price ?: base.bid)
     }
 
@@ -749,16 +775,17 @@ class TradingViewModel @Inject constructor(
             if (_histNow.value > 0L) controller.setCountdown(candles.remainingToClose(_histNow.value))
         }
         sampleEquity(season, state, equity, margin)
-        // Point the display path at the candle forming at the replayed clock, so the visual
-        // walk is bounded by that candle's real range. Reads one row; never used for fills.
-        val now = seasons.histNow(season)
-        val forming = db.candleDao()
-            .lastBefore(MarketTime.floorTo(now, MarketTime.MINUTE_MS), 1)
-            .firstOrNull()?.toEngine()
-        displayCandle = forming
-        displayCandleHistNow = now
+        // Point the display path at the last CLOSED candle, so the visual walk is a band
+        // around that candle's close. It never reads the forming minute's high, low or close.
+        val latestClosed = candles.latestClosed(_histNow.value)
+        if (latestClosed?.ts != displayClosed?.ts) {
+            displayClosed = latestClosed
+            // Snap the screen-only price to the new candle's real close, so a fresh minute
+            // starts on the true price before the next 4 Hz tick paints a walk.
+            displayPriceCache = latestClosed?.c
+        }
         // Re-point the screen-only quote/strip now that the authoritative state is fresh, so
-        // the equity strip tracks the forming candle from the very first frame after load.
+        // the equity strip tracks the walk from the very first frame after load.
         syncDisplayQuote()
     }
 

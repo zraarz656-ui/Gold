@@ -45,7 +45,8 @@ class StopHitTest {
 
         val balanceAtOpen = vm.strip.value.balance
         val dayStartEquity = vm.strip.value.equity // flat, so day-start equity == equity now
-        val fillAsk = vm.displayQuote.value.ask
+        // Fills read the authoritative quote, not the smoothed display walk.
+        val fillAsk = vm.quote.value.ask
         val sl = FillEngine.roundPrice(fillAsk - 3.0)
 
         h.onMain {
