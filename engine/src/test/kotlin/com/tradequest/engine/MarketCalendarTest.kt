@@ -52,4 +52,17 @@ class MarketCalendarTest {
         assertTrue(MarketCalendar.isWeekend(saturday))
         assertFalse(MarketCalendar.isWeekend(midweek))
     }
+
+    @Test
+    fun `nextOpen is the upcoming Sunday 17 00 New York boundary while closed`() {
+        val saturday = TestSupport.ny(2024, 3, 9, 12, 0)
+        val sundayOpen = TestSupport.ny(2024, 3, 10, 17, 0)
+        assertEquals(sundayOpen, MarketCalendar.nextOpen(saturday))
+        // Friday just after the rollover opens on the same Sunday.
+        val fridayRoll = TestSupport.ny(2024, 3, 8, 17, 0)
+        assertEquals(sundayOpen, MarketCalendar.nextOpen(fridayRoll))
+        // During an open session the market is open now.
+        val midweek = TestSupport.ny(2024, 3, 13, 10, 0)
+        assertEquals(midweek, MarketCalendar.nextOpen(midweek))
+    }
 }

@@ -100,6 +100,19 @@ object MarketCalendar {
     }
 
     /**
+     * The instant the market next opens at or after [ts]. Outside the weekend shutdown this
+     * is [ts] itself; inside it, the upcoming Sunday 17:00 New York boundary (the weekly open).
+     */
+    fun nextOpen(ts: Long): Long {
+        if (!isClosed(ts)) return ts
+        val z = zdt(ts)
+        val daysSinceSunday = z.dayOfWeek.value % 7L
+        val sunday = z.toLocalDate().minusDays(daysSinceSunday)
+        val candidate = epoch(sunday, ROLLOVER)
+        return if (candidate >= ts) candidate else epoch(sunday.plusWeeks(1), ROLLOVER)
+    }
+
+    /**
      * Start of the [tf] bucket that contains [ts].
      *
      * @throws IllegalArgumentException if [tf] is [Timeframe.M1], which is already the

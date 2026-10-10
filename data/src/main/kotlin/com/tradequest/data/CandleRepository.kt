@@ -55,6 +55,13 @@ class CandleRepository(private val db: TradeQuestDatabase) {
     suspend fun latestClosed(histNow: Long): Candle? =
         db.candleDao().lastBefore(histNow - MINUTE_MS, 1).firstOrNull()?.toEngine()
 
+    /**
+     * Milliseconds until the candle forming at [histNow] closes (the next minute boundary).
+     * The season offset is a whole number of weeks, so historical and real minute boundaries
+     * coincide.
+     */
+    fun remainingToClose(histNow: Long): Long = MINUTE_MS - Math.floorMod(histNow, MINUTE_MS)
+
     /** Publish a new closed candle timestamp to the ticker. */
     fun publish(closedTs: Long) {
         if (closedTs > _ticker.value) _ticker.value = closedTs

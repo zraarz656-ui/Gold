@@ -3,6 +3,7 @@ package com.tradequest.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -36,6 +37,13 @@ class PreferencesStore(private val context: Context) {
         }
         .map { it[LabelSizeKey] ?: DEFAULT_LABEL_SIZE }
 
+    /** Emits whether the candle-close countdown is shown, defaulting to true. */
+    val showCountdown: Flow<Boolean> = context.themeDataStore.data
+        .catch { throwable ->
+            if (throwable is IOException) emit(emptyPreferences()) else throw throwable
+        }
+        .map { it[ShowCountdownKey] ?: DEFAULT_SHOW_COUNTDOWN }
+
     /** One-shot read for startup; falls back to Dark on any failure. */
     suspend fun themeIdOnce(): String = runCatching { themeId.first() }.getOrDefault(DEFAULT_THEME)
 
@@ -43,12 +51,20 @@ class PreferencesStore(private val context: Context) {
     suspend fun labelSizeIdOnce(): String =
         runCatching { labelSizeId.first() }.getOrDefault(DEFAULT_LABEL_SIZE)
 
+    /** One-shot read for startup; the countdown is shown by default. */
+    suspend fun showCountdownOnce(): Boolean =
+        runCatching { showCountdown.first() }.getOrDefault(DEFAULT_SHOW_COUNTDOWN)
+
     suspend fun setThemeId(value: String) {
         context.themeDataStore.edit { it[ThemeKey] = value }
     }
 
     suspend fun setLabelSizeId(value: String) {
         context.themeDataStore.edit { it[LabelSizeKey] = value }
+    }
+
+    suspend fun setShowCountdown(value: Boolean) {
+        context.themeDataStore.edit { it[ShowCountdownKey] = value }
     }
 
     companion object {
@@ -60,7 +76,12 @@ class PreferencesStore(private val context: Context) {
         const val LABEL_SIZE_KEY = "price_label_size"
         const val DEFAULT_LABEL_SIZE = "MEDIUM"
 
+        /** The persisted candle-close countdown key; shown by default. */
+        const val SHOW_COUNTDOWN_KEY = "show_candle_countdown"
+        const val DEFAULT_SHOW_COUNTDOWN = true
+
         private val ThemeKey = stringPreferencesKey(THEME_KEY)
         private val LabelSizeKey = stringPreferencesKey(LABEL_SIZE_KEY)
+        private val ShowCountdownKey = booleanPreferencesKey(SHOW_COUNTDOWN_KEY)
     }
 }
