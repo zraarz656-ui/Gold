@@ -42,6 +42,12 @@ fun OrderSheet(
     modifier: Modifier = Modifier,
     initialType: OrderType = OrderType.MARKET,
     initialSide: Side = Side.LONG,
+    /**
+     * The authoritative (last closed candle) quote used for entry defaults, SL/TP validation
+     * and the risk calculator. Defaults to [quote]; the app passes the real quote so the
+     * smoothed display price on the buttons never changes whether an order is accepted.
+     */
+    validationQuote: Quote = quote,
     onDismiss: () -> Unit,
     onPlace: (OrderRequest) -> Unit,
 ) {
@@ -63,9 +69,9 @@ fun OrderSheet(
     }
     val side = if (type == OrderType.MARKET) marketSide else pendingSide
     val entry = price.toDoubleOrNull() ?: when (type) {
-        OrderType.MARKET -> if (side == Side.LONG) quote.ask else quote.bid
-        OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
-        else -> quote.bid
+        OrderType.MARKET -> if (side == Side.LONG) validationQuote.ask else validationQuote.bid
+        OrderType.BUY_LIMIT, OrderType.BUY_STOP -> validationQuote.ask
+        else -> validationQuote.bid
     }
     val stopDistance = RiskCalculator.stopDistance(entry, sl.toDoubleOrNull())
     val calculatedLots = if (useRisk && stopDistance != null) {
@@ -86,11 +92,11 @@ fun OrderSheet(
             trailingDist = trail.toDoubleOrNull(),
         )
         val entry = price.toDoubleOrNull() ?: when (t) {
-            OrderType.MARKET -> if (s == Side.LONG) quote.ask else quote.bid
-            OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
-            else -> quote.bid
+            OrderType.MARKET -> if (s == Side.LONG) validationQuote.ask else validationQuote.bid
+            OrderType.BUY_LIMIT, OrderType.BUY_STOP -> validationQuote.ask
+            else -> validationQuote.bid
         }
-        OrderRules.requestError(request, bid = quote.bid, ask = quote.ask, spread = quote.spread, entry = entry)?.let {
+        OrderRules.requestError(request, bid = validationQuote.bid, ask = validationQuote.ask, spread = validationQuote.spread, entry = entry)?.let {
             error = it
             return
         }

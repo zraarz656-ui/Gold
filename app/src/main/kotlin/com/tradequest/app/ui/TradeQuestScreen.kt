@@ -67,8 +67,12 @@ private const val MIN_CHART_SCREEN_FRACTION = 0.55f
 @Composable
 fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier) {
     val startup by viewModel.startup.collectAsStateWithLifecycle()
-    val quote by viewModel.quote.collectAsStateWithLifecycle()
-    val strip by viewModel.strip.collectAsStateWithLifecycle()
+    // The screen-only smoothed quote/strip. The authoritative quote/strip (used for fills
+    // and orders) are read inside the ViewModel and are unchanged by the display path.
+    val quote by viewModel.displayQuote.collectAsStateWithLifecycle()
+    val strip by viewModel.displayStrip.collectAsStateWithLifecycle()
+    // Authoritative (last closed candle) quote for validating order entry.
+    val realQuote by viewModel.quote.collectAsStateWithLifecycle()
     val orders by viewModel.liveOrders.collectAsStateWithLifecycle()
     val history by viewModel.history.collectAsStateWithLifecycle()
     val offsetMs by viewModel.displayOffsetMs.collectAsStateWithLifecycle()
@@ -151,6 +155,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                     sheetFor?.let { type ->
                         OrderSheet(
                             quote = quote,
+                            validationQuote = realQuote,
                             equity = strip.equity,
                             riskPercent = risk,
                             initialType = type,

@@ -92,7 +92,10 @@ fun DrawScope.drawChart(
 
     val last = state.bars.lastOrNull()
     val scale = state.labelScale
-    val currentY = last?.let { ChartMath.priceToY(it.c, geo.priceRange, plot) }
+    // The smoothed display price if set, else the last close. Visual only: the candle data
+    // (and every fill) still uses the completed close.
+    val displayPrice = state.displayPrice ?: last?.c
+    val currentY = displayPrice?.let { ChartMath.priceToY(it, geo.priceRange, plot) }
     val crosshairY = crosshair?.let { it.y.coerceIn(plot.top, plot.bottom) }
     val lastUp = last != null && last.c >= last.o
     val currentColor = TagStyle.currentPriceFill(theme, lastUp)
@@ -129,9 +132,9 @@ fun DrawScope.drawChart(
             price, scale, theme, textColor = inverted.text,
         )
     }
-    if (last != null && currentY != null) {
-        val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale, measure.width(formatPrice(last.c), CURRENT_PRICE_TAG_SP * scale))
-        drawCurrentPriceTag(state, geo, textMeasurer, rect, currentColor, last.c, currentY, lastUp, scale)
+    if (last != null && currentY != null && displayPrice != null) {
+        val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale, measure.width(formatPrice(displayPrice), CURRENT_PRICE_TAG_SP * scale))
+        drawCurrentPriceTag(state, geo, textMeasurer, rect, currentColor, displayPrice, currentY, lastUp, scale)
 
         // The candle-close countdown sits just under the tag, in muted text.
         val countdown = state.countdownMs
@@ -416,7 +419,8 @@ private fun DrawScope.drawMarker(x: Float, y: Float, entry: Boolean, long: Boole
 /** The current-price line: a 1dp dotted line at 60% opacity, in the up/down colour. */
 private fun DrawScope.drawCurrentPriceLine(state: ChartState, geo: ChartGeometry) {
     val last = state.bars.lastOrNull() ?: return
-    val y = ChartMath.priceToY(last.c, geo.priceRange, geo.plot)
+    val price = state.displayPrice ?: last.c
+    val y = ChartMath.priceToY(price, geo.priceRange, geo.plot)
     val color = TagStyle.currentPriceFill(state.theme, last.c >= last.o)
         .copy(alpha = CURRENT_PRICE_LINE_OPACITY)
     drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), width = 1f, dash = 4f, gap = 3f)

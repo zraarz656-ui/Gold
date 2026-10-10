@@ -399,6 +399,16 @@ class ChartController(
         if (state.displayOffsetMs != ms) state = state.copy(displayOffsetMs = ms)
     }
 
+    /**
+     * The visual-only smoothed price shown between closes. Pass null to fall back to the
+     * last close (e.g. when the market is shut or the dataset is exhausted). This never
+     * reaches the engine: fills and P&L always read the completed candle.
+     */
+    fun setDisplayPrice(price: Double?) {
+        val p = price?.takeIf { it.isFinite() && it > 0.0 }
+        if (state.displayPrice != p) state = state.copy(displayPrice = p)
+    }
+
     companion object {
         fun spanMs(tf: Timeframe): Long = when (tf) {
             Timeframe.M1 -> 60_000L

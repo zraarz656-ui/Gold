@@ -36,6 +36,7 @@ class TradingHarness {
     val min = 60_000L
 
     lateinit var db: TradeQuestDatabase
+    lateinit var candles: CandleRepository
     private lateinit var context: Context
 
     private val assets = object : AssetSource {
@@ -57,7 +58,7 @@ class TradingHarness {
         db = db,
         seasons = SeasonRepository(db) { openNow },
         trading = TradingRepository(db),
-        candles = CandleRepository(db),
+        candles = CandleRepository(db).also { candles = it },
         settings = SettingsRepository(db),
         preferences = PreferencesStore(context),
         catchUp = CatchUpProcessor(db),
@@ -91,7 +92,9 @@ class TradingHarness {
     fun awaitUntil(timeoutMs: Long = 20_000L, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            shadowOf(Looper.getMainLooper()).idle()
+            // advance() lets coroutines parked on the main dispatcher's delay() (the 4 Hz
+            // display ticker) run; idle() alone only fires tasks already due.
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(60))
             if (condition()) return
             Thread.sleep(5)
         }

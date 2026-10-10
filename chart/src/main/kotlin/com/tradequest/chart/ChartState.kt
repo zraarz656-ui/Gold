@@ -51,6 +51,11 @@ data class ChartState(
     val density: Float = 1f,
     /** The single position whose "+SL"/"+TP" handles are shown; null when none is selected. */
     val selectedEntryId: Long? = null,
+    /**
+     * Visual-only smoothed price (see `LiveDisplayPath`). When non-null the price line, tag
+     * and dot are drawn here instead of the last close. It never affects fills or P&L.
+     */
+    val displayPrice: Double? = null,
 ) {
     /** Lines to draw: the overlay's lines plus the live drag preview. */
     val orderLines: List<ChartOrderLine> get() = overlay.lines
