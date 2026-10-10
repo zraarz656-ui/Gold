@@ -311,7 +311,16 @@ private fun DataPanel(stats: DataStats) {
         DataRow("Close last", "%.2f".format(stats.closeLast))
         DataRow("Close min / med / max", "%.2f / %.2f / %.2f".format(
             stats.closeMin, stats.closeMedian, stats.closeMax))
-        DataRow("Weekday gaps >5m", "${stats.weekdayGapCount}")
+        DataRow("Normal gaps (daily/weekend)", "${stats.normalGapCount}")
+        DataRow("Unexpected gaps", "${stats.unexpectedGaps.size}")
+        stats.unexpectedGaps.forEach { g ->
+            val utcFrom = formatDateTime(g.fromTs, ZoneOffset.UTC)
+            val utcTo = formatDateTime(g.toTs, ZoneOffset.UTC)
+            DataRow("", "• ${utcFrom} → ${utcTo} UTC")
+            DataRow("", "   shows ${formatDateTime(g.fromTs + stats.offsetMs, zone)} →" +
+                " ${formatDateTime(g.toTs + stats.offsetMs, zone)}")
+            DataRow("", "   length ${g.minutes} min (${g.length})")
+        }
         DataRow("News events", "${stats.newsCount}")
         DataRow("Offset", "${stats.offsetMs / MarketTime.WEEK_MS} weeks (${stats.offsetMs} ms)")
         DataRow("histNow", "${utc(stats.histNow)} UTC")

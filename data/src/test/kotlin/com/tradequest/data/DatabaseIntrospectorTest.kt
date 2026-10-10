@@ -6,7 +6,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
-/** The Data panel aggregates: counts, range, and weekday-only gap detection. */
+/** The Data panel aggregates: counts, range, and gap classification (normal vs unexpected). */
 @RunWith(RobolectricTestRunner::class)
 class DatabaseIntrospectorTest {
 
@@ -26,8 +26,8 @@ class DatabaseIntrospectorTest {
         assertEquals(base, s.firstTs)
         assertEquals(base + 99 * min, s.lastTs)
         assertEquals(1L, s.newsCount)
-        assertEquals(0, s.gaps.size)
-        assertEquals(0, DatabaseIntrospector.weekdayGaps(s).size)
+        assertEquals(0, s.unexpectedGaps.size)
+        assertEquals(0, s.normalGapCount)
         // Close stats mirror the inserted series (first/last exact; min/median/max ordered).
         val closes = TestDb.candles(count = 100, startTs = base).map { it.c }
         assertEquals(closes.first(), s.closeFirst, 0.0)
@@ -41,36 +41,59 @@ class DatabaseIntrospectorTest {
     }
 
     @Test
-    fun flagsWeekdayGapsButNotWeekendGaps() = runTest {
-        val db = TestDb.open()
-        // Contiguous run, then a 2-hour hole in the middle of a weekday: reported.
-        val first = TestDb.candles(count = 10, startTs = base)
-        val second = TestDb.candles(count = 10, startTs = base + 10 * min + 120 * min)
-        db.candleDao().insertAll(first + second)
-
-        val s = DatabaseIntrospector.summary(db)
-        assertEquals(1, s.gaps.size)
-        assertEquals(121L, s.gaps.first().minutes)
-        assertEquals(1, DatabaseIntrospector.weekdayGaps(s).size)
-        db.close()
+    fun shortWeekdayHoleIsUnexpected() {
+        // 2026-09-07 19:28 → 23:00 UTC, a 212-minute Labor Day hole: not the daily break
+        // (too long) and not a full weekend window.
+        val g = DatabaseIntrospector.classify(1_788_809_280_000L, 1_788_822_000_000L)
+        assertEquals(GapKind.UNEXPECTED, g.kind)
+        assertEquals(212L, g.minutes)
     }
 
     @Test
-    fun weekendShutdownGapIsNotAWeekdayGap() = runTest {
+    fun dailyRolloverBreakIsNormal() {
+        // 2026-07-01 21:59 → 23:00 UTC: a ~61-minute New York-rollover break.
+        val g = DatabaseIntrospector.classify(1_782_943_140_000L, 1_782_946_800_000L)
+        assertEquals(GapKind.DAILY_BREAK, g.kind)
+        assertEquals(61L, g.minutes)
+    }
+
+    @Test
+    fun weekendShutdownIsNormal() {
+        // 2026-07-10 21:59 → 2026-07-12 23:00 UTC: Friday rollover to Sunday re-open.
+        val g = DatabaseIntrospector.classify(1_783_720_740_000L, 1_783_897_200_000L)
+        assertEquals(GapKind.WEEKEND, g.kind)
+    }
+
+    @Test
+    fun holidayLengthenedWeekendIsUnexpected() {
+        // 2026-07-03 17:58 → 2026-07-05 23:00 UTC: the weekend plus the July-4 close.
+        val g = DatabaseIntrospector.classify(1_783_101_480_000L, 1_783_292_400_000L)
+        assertEquals(GapKind.UNEXPECTED, g.kind)
+        assertEquals(3182L, g.minutes)
+    }
+
+    @Test
+    fun longSep25HoleIsUnexpected() {
+        // 2026-09-25 00:59 → 2026-09-27 23:00 UTC, a 70-hour hole.
+        val g = DatabaseIntrospector.classify(1_790_297_940_000L, 1_790_550_000_000L)
+        assertEquals(GapKind.UNEXPECTED, g.kind)
+        assertEquals(4201L, g.minutes)
+        assertEquals("70h 01m", g.length)
+    }
+
+    @Test
+    fun summarySplitsNormalAndUnexpectedGaps() = runTest {
         val db = TestDb.open()
-        // Friday 22:30 UTC → Monday 01:00 UTC is a weekend shutdown (inside the Fri-17:00
-        // to Sun-17:00 NY closure), not a data gap.
-        val friday = 1_700_260_200_000L // 2023-11-17T22:30:00Z (Friday)
-        val monday = 1_700_442_000_000L // 2023-11-20T01:00:00Z (Monday)
-        db.candleDao().insertAll(
-            listOf(
-                Candle1m(friday, 1.0, 1.0, 1.0, 1.0, 1.0),
-                Candle1m(monday, 1.0, 1.0, 1.0, 1.0, 1.0),
-            ),
-        )
+        // A 61-minute daily break, then a real 4-hour hole: one of each.
+        val a = TestDb.candles(count = 10, startTs = base)
+        val b = TestDb.candles(count = 10, startTs = base + 10 * min + 60 * min)
+        val c = TestDb.candles(count = 10, startTs = base + 80 * min + 240 * min)
+        db.candleDao().insertAll(a + b + c)
+
         val s = DatabaseIntrospector.summary(db)
-        assertEquals(1, s.gaps.size) // the table-level gap exists
-        assertEquals(0, DatabaseIntrospector.weekdayGaps(s).size) // but it is the weekend
+        assertEquals(1, s.normalGapCount)
+        assertEquals(1, s.unexpectedGaps.size)
+        assertEquals(241L, s.unexpectedGaps.first().minutes)
         db.close()
     }
 
@@ -81,7 +104,8 @@ class DatabaseIntrospectorTest {
         assertEquals(0L, s.candleCount)
         assertEquals(0L, s.firstTs)
         assertEquals(0L, s.lastTs)
-        assertEquals(0, s.gaps.size)
+        assertEquals(0, s.unexpectedGaps.size)
+        assertEquals(0, s.normalGapCount)
         db.close()
     }
 }
