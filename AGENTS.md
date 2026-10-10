@@ -263,6 +263,31 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   become distinct positive closed-range ids). The exported schemas are wired as test assets in
   `data/build.gradle.kts` (`sourceSets["test"].assets.srcDirs(files("$projectDir/schemas"))`).
 
+## Live follow and the Fit button (device report on build 29fd710)
+- **Live follow ("4 new" with no touch).** `appendM1` used to decide with `atLiveEdge()`,
+  which recomputes the live-edge scroll from the *current* `scrollIndex`. A resize (the
+  right gutter is measured from the widest price label, so `plotWidthPx` changes when the
+  labels change) leaves `scrollIndex` at the value for the old width; `atLiveEdge()` then
+  returns false while `liveEdgeFollowing` is still true, so each tick takes the "anchored"
+  branch and bumps `pendingNewCandles`. Fix: `appendM1` gates on the explicit intent
+  `state.liveEdgeFollowing` (set by `jumpToLatest`, cleared by a deliberate `pan`/`zoom`
+  away) and re-anchors with `jumpToLatest()` each tick; `onLayout` also re-anchors when it
+  is still following. The bug reproduces only when data arrives *before* the first layout
+  (the app's async Room read vs. first composition): `ChartController(emptyList())`,
+  `replaceData(...)`, then `onLayout(...)`. Tests: `LiveFollowTest` (the pure-controller
+  regression, fails without the fix), the two `LiveMinuteTickTest` cases and
+  `LiveFollowUiTest`.
+- **Fit button ("does nothing").** `ChartFitButton` calls `controller.autoFitPrice()` ->
+  `resetPriceScale()`, which clears `manualPriceScale`/`manualPriceMin/Max`; the renderer
+  then re-fits to the visible candles (`resolvePriceRange` -> `autoFitRange`, 5% padding,
+  `MIN_AUTO_RANGE = 2.0`). This could not be reproduced in the harness: real
+  `performTouchInput` taps (not `performClick`, which invokes the semantics action and hides
+  pointer arbitration) reach the button and reset the scale, both after a programmatic
+  `scalePriceRange` and after a real vertical drag on the price gutter. See
+  `FitButtonTouchUiTest`. Remaining device-only hypotheses: `Size(36.dp)` after an
+  alignment modifier, or firmware gesture navigation eating corner taps. If it reproduces,
+  log inside `autoFitPrice`/`resetPriceScale` on the device before changing more.
+
 ## Serving the APK (publish dir)
 - The work hosts serve `/workspace/serve` on ports 12000/12001. `python3 -m http.server`
   started with a plain `&` dies with its parent shell, so start it detached with `setsid`

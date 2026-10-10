@@ -62,4 +62,30 @@ class LiveMinuteTickTest {
         assertTrue("still following after a new candle", vm.controller.state.liveEdgeFollowing)
         assertEquals(0, vm.controller.pendingNewCandles)
     }
+
+    @Test
+    fun noGestureOverFourMinutesKeepsTheNewestCandleInView() {
+        h.seed()
+        val vm = h.buildViewModel()
+        h.awaitUntil { vm.ready.value && vm.quote.value.bid > 0.0 }
+
+        val startBars = vm.controller.state.m1.size
+        repeat(4) { step ->
+            h.clockMs = h.openNow + (step + 1) * h.min
+            h.candles.publish(ClockEngine.lastVisibleCandleTs(h.clockMs))
+            h.awaitUntil { vm.controller.state.m1.size == startBars + step + 1 }
+            // No gesture was made, so the chart must still be following the live edge.
+            assertTrue("following after minute ${step + 1}", vm.controller.state.liveEdgeFollowing)
+            assertEquals("no backlog after minute ${step + 1}", 0, vm.controller.pendingNewCandles)
+            val x = com.tradequest.chart.ChartMath.indexToX(
+                (vm.controller.state.barCount - 1).toFloat(),
+                vm.controller.state.viewport,
+            )
+            assertTrue(
+                "newest candle on screen after minute ${step + 1}: x=$x",
+                x <= vm.controller.plotWidthPx + 1e-3f,
+            )
+        }
+        assertEquals(startBars + 4, vm.controller.state.m1.size)
+    }
 }

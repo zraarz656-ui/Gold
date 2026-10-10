@@ -49,15 +49,17 @@ class ChartController(
     fun onLayout(densityPx: Float, plotWidthPx: Float) {
         this.density = densityPx
         this.plotWidthPx = plotWidthPx
-        if (!widthInitialized) {
+        val viewport = if (!widthInitialized) {
             widthInitialized = true
-            state = state.copy(
-                viewport = state.viewport.copy(candleWidthPx = barWidthDp * densityPx),
-                density = densityPx,
-            )
+            state.viewport.copy(candleWidthPx = barWidthDp * densityPx)
         } else {
-            state = state.copy(density = densityPx)
+            state.viewport
         }
+        state = state.copy(viewport = viewport, density = densityPx)
+        // A resize moves where the live edge sits, so the previously applied scroll is now
+        // stale. If the user is still following, re-anchor so the newest candle stays in
+        // view until the next tick; a deliberate scroll-away is left where the user put it.
+        if (state.liveEdgeFollowing) jumpToLatest()
     }
 
     private fun visibleCandles(): Float = ChartMath.visibleCandles(plotWidthPx, state.viewport.candleWidthPx)
@@ -165,7 +167,11 @@ class ChartController(
         val allM1 = cache.onNewM1(candle)
         val bars = cache.bars(state.timeframe)
         val newBars = bars.size - oldBarCount
-        if (atLiveEdge()) {
+        // Follow the user's INTENT, not the derived scroll position: while they have not
+        // gestured away, keep the newest candle parked at the live edge even if a layout
+        // change left `scrollIndex` at a stale value. Only a deliberate scroll-away (which
+        // clears `liveEdgeFollowing`) lets new candles go off-screen and accumulate.
+        if (state.liveEdgeFollowing) {
             pendingNewCandles = 0
             state = state.copy(m1 = allM1, bars = bars, clockMs = clockMs)
             jumpToLatest()
