@@ -307,6 +307,10 @@ private fun DataPanel(stats: DataStats) {
         DataRow("", "shows ${shown(stats.firstTs)}")
         DataRow("Last candle", "${utc(stats.lastTs)} UTC")
         DataRow("", "shows ${shown(stats.lastTs)}")
+        DataRow("Close first", "%.2f".format(stats.closeFirst))
+        DataRow("Close last", "%.2f".format(stats.closeLast))
+        DataRow("Close min / med / max", "%.2f / %.2f / %.2f".format(
+            stats.closeMin, stats.closeMedian, stats.closeMax))
         DataRow("Weekday gaps >5m", "${stats.weekdayGapCount}")
         DataRow("News events", "${stats.newsCount}")
         DataRow("Offset", "${stats.offsetMs / MarketTime.WEEK_MS} weeks (${stats.offsetMs} ms)")
