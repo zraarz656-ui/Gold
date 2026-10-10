@@ -27,8 +27,10 @@ import androidx.compose.ui.unit.sp
 import com.tradequest.app.ui.theme.TradeNumberField
 import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.chart.formatDateTime
+import com.tradequest.chart.formatTime
 import com.tradequest.data.OrderStatus
 import com.tradequest.data.TradeOrder
+import com.tradequest.data.label
 import com.tradequest.engine.FillEngine
 import com.tradequest.engine.Side
 import androidx.compose.material3.LocalContentColor
@@ -209,16 +211,28 @@ private fun QueuedCard(order: TradeOrder, displayOffsetMs: Long, onCancel: (Long
 private fun ClosedCard(order: TradeOrder, displayOffsetMs: Long) {
     val c = tradeColors
     val pnl = order.pnl ?: 0.0
+    // A long is closed at the bid, a short at the ask; label the close side accordingly.
+    val closeSide = if (order.side == Side.LONG) "bid" else "ask"
+    val reason = order.closeReason?.label() ?: "—"
+    val trigger = order.triggerPrice?.let { " ${"%.2f".format(it)}" } ?: ""
+    val closeTime = order.closedAt?.let { " · ${formatTime(it + displayOffsetMs)}" } ?: ""
     Column(Modifier.fillMaxWidth().background(c.surfaceVariant).padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
                 "${if (order.side == Side.LONG) "LONG" else "SHORT"} ${"%.2f".format(order.lots)} " +
-                    "@ ${order.entryPrice?.let { "%.2f".format(it) } ?: "—"} → ${order.closePrice?.let { "%.2f".format(it) } ?: "—"}",
+                    "@ ${order.entryPrice?.let { "%.2f".format(it) } ?: "—"} → " +
+                    "${order.closePrice?.let { "%.2f".format(it) } ?: "—"} ($closeSide)",
                 color = c.onSurfaceVariant, fontWeight = FontWeight.Bold, fontSize = 12.sp,
             )
             Text(signedMoney(pnl), color = if (pnl >= 0) c.positive else c.negative, fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
-        order.closedAt?.let { Text("Closed ${formatDateTime(it + displayOffsetMs)}", color = c.onSurfaceVariant, fontSize = 10.sp) }
+        Text("$reason$trigger$closeTime", color = c.onSurfaceVariant, fontSize = 10.sp)
+        val gross = order.grossPnl ?: 0.0
+        val fees = order.fees ?: 0.0
+        Text(
+            "gross ${signedMoney(gross)} · commission ${signedMoney(-fees)} · net ${signedMoney(pnl)}",
+            color = c.onSurfaceVariant, fontSize = 10.sp,
+        )
     }
 }
 

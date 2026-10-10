@@ -30,6 +30,12 @@ fun formatDateTime(ts: Long, zone: ZoneId = ZoneId.systemDefault()): String {
     return String.format("%04d-%02d-%02d %02d:%02d", z.year, z.monthValue, z.dayOfMonth, z.hour, z.minute)
 }
 
+/** `HH:mm` (local zone) for compact timestamps such as a close reason line. */
+fun formatTime(ts: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    val z = Instant.ofEpochMilli(ts).atZone(zone)
+    return String.format("%02d:%02d", z.hour, z.minute)
+}
+
 /** `dd MMM HH:mm` (UTC) used by the news dialog placeholder. Kept for parity with the APK. */
 fun formatShortDateTime(ts: Long, zone: ZoneId = ZoneId.systemDefault()): String =
     Instant.ofEpochMilli(ts).atZone(zone).format(SHORT)

@@ -751,9 +751,20 @@ class TradingViewModel @Inject constructor(
 
     fun closePosition(positionId: Long, lots: Double? = null) {
         viewModelScope.launch {
-            // The live market's "now" is the last visible candle; that is the close time.
-            catchUpMutex.withLock {
-                trading.closePosition(seasonId, positionId, _quote.value.bid, ClockEngine.lastVisibleCandleTs(_histNow.value), lots)
+            try {
+                // A long is closed at the bid, a short at the ask. That same price is what
+                // gets persisted and fed into the P&L, so the row always reconciles.
+                val q = _quote.value
+                val existing = trading.order(positionId)
+                val exitPrice = if (existing?.side == Side.SHORT) q.ask else q.bid
+                catchUpMutex.withLock {
+                    // The live market's "now" is the last visible candle; that is the close time.
+                    trading.closePosition(seasonId, positionId, exitPrice, ClockEngine.lastVisibleCandleTs(_histNow.value), lots)
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "closePosition: failed positionId=$positionId lots=$lots", t)
+                _submitError.value = "Could not close the position: ${t.message}"
+                return@launch
             }
             refreshDerived()
         }

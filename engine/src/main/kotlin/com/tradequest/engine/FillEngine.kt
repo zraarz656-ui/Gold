@@ -67,7 +67,7 @@ data class Fill(
 )
 
 /** Why a position was closed. */
-enum class CloseReason { SL, TP, STOP_OUT, MANUAL }
+enum class CloseReason { SL, TP, STOP_OUT, MANUAL, PARTIAL }
 
 /** A realised close with its profit and loss. */
 data class ClosedPosition(
@@ -82,6 +82,8 @@ data class ClosedPosition(
     val reason: CloseReason,
     /** Timestamp of the candle whose processing closed the position. */
     val closeTs: Long,
+    /** The SL/TP level (or stop-out stop) that triggered the close; null for manual/half. */
+    val triggerPrice: Double? = null,
 )
 
 /** Risk events emitted while processing a candle. */
@@ -257,7 +259,8 @@ object FillEngine {
             val tpFill = takeProfitFill(pos, candle, spread)
             val exit = slFill ?: tpFill ?: continue
             val reason = if (slFill != null) CloseReason.SL else CloseReason.TP
-            val result = realise(balance, pos, exit, reason, candle.ts)
+            val trigger = if (slFill != null) pos.sl else pos.tp
+            val result = realise(balance, pos, exit, reason, candle.ts, triggerPrice = trigger)
             balance = result.first
             closed.add(result.second)
             positions.remove(pos)
@@ -278,7 +281,7 @@ object FillEngine {
             val level = if (used <= 0.0) Double.MAX_VALUE else worstEquity(balance, positions, candle, spread) / used * 100.0
             if (level >= STOP_OUT_LEVEL) break
             val loser = positions.minByOrNull { floating(it, worstMark(it, candle, spread)) }!!
-            val result = realise(balance, loser, worstMark(loser, candle, spread), CloseReason.STOP_OUT, candle.ts)
+            val result = realise(balance, loser, worstMark(loser, candle, spread), CloseReason.STOP_OUT, candle.ts, triggerPrice = loser.sl)
             balance = result.first
             closed.add(result.second)
             positions.remove(loser)
@@ -452,6 +455,7 @@ object FillEngine {
         exitPrice: Double,
         reason: CloseReason,
         closeTs: Long,
+        triggerPrice: Double? = null,
     ): Pair<Double, ClosedPosition> {
         val gross =
             if (pos.side == Side.LONG) (exitPrice - pos.entryPrice) * LOT_OZ * pos.lots
@@ -468,6 +472,7 @@ object FillEngine {
             netPnl = gross - commission,
             reason = reason,
             closeTs = closeTs,
+            triggerPrice = triggerPrice,
         )
     }
 
@@ -489,8 +494,9 @@ object FillEngine {
         val pos = state.positions.firstOrNull { it.id == positionId } ?: return null
         val closingLots = min(lots, pos.lots)
         if (closingLots <= 0.0) return null
-        val realised = realise(state.balance, pos.copy(lots = closingLots), roundPrice(exitPrice), CloseReason.MANUAL, closeTs)
         val remainder = pos.lots - closingLots
+        val reason = if (remainder <= 1e-9) CloseReason.MANUAL else CloseReason.PARTIAL
+        val realised = realise(state.balance, pos.copy(lots = closingLots), roundPrice(exitPrice), reason, closeTs)
         val positions = if (remainder <= 1e-9) {
             state.positions.filterNot { it.id == positionId }
         } else {

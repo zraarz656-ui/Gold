@@ -3,6 +3,7 @@ package com.tradequest.data
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.tradequest.engine.CloseReason
 import com.tradequest.engine.Impact
 import com.tradequest.engine.OrderType
 import com.tradequest.engine.Side
@@ -55,6 +56,15 @@ data class Season(
 /** Lifecycle state of a trade order. */
 enum class OrderStatus { PENDING, QUEUED, OPEN, CLOSED, CANCELLED }
 
+/** Short label for a close reason, as shown in the Closed trades list. */
+fun CloseReason.label(): String = when (this) {
+    CloseReason.SL -> "SL"
+    CloseReason.TP -> "TP"
+    CloseReason.STOP_OUT -> "Stop-out"
+    CloseReason.MANUAL -> "Manual"
+    CloseReason.PARTIAL -> "Half"
+}
+
 /** A trade order (pending) or open/closed position. */
 @Entity(tableName = "trade_order", indices = [Index("seasonId"), Index("status")])
 data class TradeOrder(
@@ -71,6 +81,12 @@ data class TradeOrder(
     val openedAt: Long?,
     val closedAt: Long?,
     val closePrice: Double?,
+    /** Why the row closed: SL, TP, STOP_OUT, MANUAL or PARTIAL. Null while live. */
+    val closeReason: CloseReason? = null,
+    /** The SL/TP/stop level that triggered a close; null for manual and half closes. */
+    val triggerPrice: Double? = null,
+    /** Gross P&L before commission, for closed rows. */
+    val grossPnl: Double? = null,
     val pnl: Double?,
     val fees: Double?,
     val tag: String?,

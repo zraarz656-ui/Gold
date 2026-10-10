@@ -153,6 +153,9 @@ interface TradeOrderDao {
     @Query("SELECT * FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED' ORDER BY closedAt ASC, id ASC")
     suspend fun closed(seasonId: Long): List<TradeOrder>
 
+    @Query("SELECT COUNT(*) FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED'")
+    suspend fun closedCount(seasonId: Long): Int
+
     @Query("DELETE FROM trade_order")
     suspend fun deleteAll()
 

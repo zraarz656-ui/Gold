@@ -1,6 +1,7 @@
 package com.tradequest.data
 
 import androidx.room.TypeConverter
+import com.tradequest.engine.CloseReason
 import com.tradequest.engine.Impact
 import com.tradequest.engine.OrderType
 import com.tradequest.engine.Side
@@ -21,4 +22,7 @@ class Converters {
 
     @TypeConverter fun orderStatusToString(v: OrderStatus): String = v.name
     @TypeConverter fun stringToOrderStatus(v: String): OrderStatus = OrderStatus.valueOf(v)
+
+    @TypeConverter fun closeReasonToString(v: CloseReason?): String? = v?.name
+    @TypeConverter fun stringToCloseReason(v: String?): CloseReason? = v?.let { CloseReason.valueOf(it) }
 }

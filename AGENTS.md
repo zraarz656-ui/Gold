@@ -217,6 +217,39 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   and two cases in `OrderSubmitAfterResumeTest`. All share `TradingHarness` (Robolectric +
   in-memory Room + the real ViewModel/repositories).
 
+## Partial close, close reasons and the P&L breakdown
+- **`Close ½` crashed the app.** `trade_order.id` is the position id, and a partial close
+  realises a subset of the lots while keeping the position open on the remainder: the CLOSED
+  row and the OPEN row both carried the same id, and `TradeOrderDao.insertAll` aborts on the
+  collision (`UNIQUE constraint failed: trade_order.id`). `TradingRepository.closePosition`
+  now gives the closed row a distinct **negative** id (`-closedCount`) *only when a remainder
+  stays open*; a full close still reuses the position id. Footer: `closePosition` in the
+  ViewModel is wrapped in try/catch and logs under tag `TradeQuest` (`Log.e`), so any future
+  close failure surfaces in logcat instead of killing the app. Test: `PartialCloseTest`.
+- **Close reason + trigger price.** `ClosedPosition` gained `triggerPrice`, and `CloseReason`
+  gained `PARTIAL` (a half close; `MANUAL` is a full manual close). SL/TP carry the level
+  that fired, stop-out carries the position's stop, manual/half are null. `TradeOrder` gained
+  `closeReason`, `triggerPrice` and `grossPnl`; the DB is at v3 with a real `MIGRATION_2_3`
+  (`fallbackToDestructiveMigration` is still there as a backstop). The Closed trades card
+  shows `SL 4068.20 · 14:21` (reason, trigger, time) and `LONG 0.05 @ 4068.20 → 4070.70 (bid)`.
+  Tests: `CloseReasonTest`.
+- **Price side.** A long is closed at the **bid**, a short at the **ask**
+  (`TradingViewModel.closePosition` picks the quote side by position side). The price written
+  to `closePrice` is exactly the price fed to `realise`, so the row's P&L reconciles with the
+  displayed close. Tests: `PriceSideTest`.
+- **P&L breakdown.** Every closed row stores gross, commission and net:
+  `(close − entry) × lots × 100 − $7 × lots` (side-aware). Shown in the card as
+  `gross … · commission … · net …`. Tests with hand-computed numbers: `PnlBreakdownTest`.
+
+## Serving the APK (publish dir)
+- The work hosts serve `/workspace/serve` on ports 12000/12001. `python3 -m http.server`
+  started with a plain `&` dies with its parent shell, so start it detached with `setsid`
+  (`setsid python3 -m http.server 12000 --bind 0.0.0.0 > server-12000.log 2>&1 < /dev/null &`).
+  A 502 from the work host means the local server is down, not a build problem.
+- After a rebuild: copy `app/build/outputs/apk/debug/app-debug.apk` to
+  `serve/tradequest-debug.apk`, refresh `.sha256`, rebuild `tradequest-debug.zip`
+  (ZIP_STORED, one file), and update the SHA in `index.html`.
+
 ## Pushing (auth note, current environment)
 - The default `git push` prompts for a username and hangs, so always push non-interactively
   with `GIT_TERMINAL_PROMPT=0`.
