@@ -71,6 +71,9 @@ data class StartupState(
 
 data class Quote(val bid: Double, val ask: Double, val spread: Double)
 
+/** While the market is shut: how long until the next open, and that open's display time. */
+data class ClosedNotice(val opensInMs: Long, val opensAtDisplayMs: Long)
+
 /**
  * Snapshot for the "Data (debug)" panel. Times are UTC epoch ms; the UI applies the
  * display offset and renders in the device zone.
@@ -150,6 +153,10 @@ class TradingViewModel @Inject constructor(
     private val _marketClosed = MutableStateFlow(false)
     val marketClosed: StateFlow<Boolean> = _marketClosed.asStateFlow()
 
+    /** While the market is shut: the next open and the wait, updated every minute. */
+    private val _closedNotice = MutableStateFlow<ClosedNotice?>(null)
+    val closedNotice: StateFlow<ClosedNotice?> = _closedNotice.asStateFlow()
+
     /** True after a debug time-travel found nothing left to replay. */
     private val _timeTravelExhausted = MutableStateFlow(false)
     val timeTravelExhausted: StateFlow<Boolean> = _timeTravelExhausted.asStateFlow()
@@ -205,6 +212,7 @@ class TradingViewModel @Inject constructor(
         // Apply the saved theme before anything heavy, so the UI colours are right early.
         controller.setTheme(themeForId(preferences.themeIdOnce()))
         controller.setLabelSize(PriceLabelSize.fromId(preferences.labelSizeIdOnce()))
+        controller.setShowCountdown(preferences.showCountdownOnce())
         val importedRows = settings.get(SettingsRepository.IMPORT_DONE, "0").toLongOrNull() ?: 0L
         val storedSource = DatasetSource.fromId(settings.get(SettingsRepository.DATA_SOURCE, ""))
         // allowFake is never passed here: production code must not replay generated data.
@@ -554,6 +562,17 @@ class TradingViewModel @Inject constructor(
         val closed = isMarketClosed(_histNow.value)
         _marketClosed.value = closed
         controller.setMarketClosed(closed)
+        if (closed) {
+            val openHist = MarketCalendar.nextOpen(_histNow.value)
+            _closedNotice.value = ClosedNotice(
+                opensInMs = openHist - _histNow.value,
+                opensAtDisplayMs = openHist + offsetMs,
+            )
+            controller.setCountdown(null)
+        } else {
+            _closedNotice.value = null
+            if (_histNow.value > 0L) controller.setCountdown(candles.remainingToClose(_histNow.value))
+        }
         sampleEquity(season, state, equity, margin)
     }
 
@@ -591,6 +610,12 @@ class TradingViewModel @Inject constructor(
     fun setLabelSize(size: PriceLabelSize) {
         controller.setLabelSize(size)
         viewModelScope.launch { preferences.setLabelSizeId(size.name) }
+    }
+
+    /** Show/hide the candle-close countdown; persisted for the next launch. */
+    fun setShowCountdown(on: Boolean) {
+        controller.setShowCountdown(on)
+        viewModelScope.launch { preferences.setShowCountdown(on) }
     }
 
     fun setRiskPercent(percent: Double) {

@@ -54,6 +54,7 @@ import com.tradequest.data.OrderStatus
 import com.tradequest.engine.MarketTime
 import com.tradequest.engine.OrderType
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 
@@ -71,6 +72,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val offsetMs by viewModel.displayOffsetMs.collectAsStateWithLifecycle()
     val risk by viewModel.riskPercent.collectAsStateWithLifecycle()
     val marketClosed by viewModel.marketClosed.collectAsStateWithLifecycle()
+    val closedNotice by viewModel.closedNotice.collectAsStateWithLifecycle()
     val timeTravelExhausted by viewModel.timeTravelExhausted.collectAsStateWithLifecycle()
     val dataStats by viewModel.dataStats.collectAsStateWithLifecycle()
     val fakeActive by viewModel.fakeActive.collectAsStateWithLifecycle()
@@ -129,12 +131,9 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
                 message?.let { msg ->
                     LevelMessageBanner(msg) { message = null }
                 }
-                if (marketClosed) {
-                    MarketClosedBanner(Modifier.align(Alignment.Center).padding(8.dp))
-                }
             }
             if (marketClosed) {
-                ClosedFooter()
+                ClosedFooter(closedNotice)
             } else {
                 sheetFor?.let { type ->
                     OrderSheet(
@@ -174,9 +173,11 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
         ChartSettingsSheet(
             theme = controller.state.theme,
             labelSize = controller.state.labelSize,
+            showCountdown = controller.state.showCountdown,
             dataStats = dataStats,
             onTheme = { viewModel.setTheme(it) },
             onLabelSize = { viewModel.setLabelSize(it) },
+            onShowCountdown = { viewModel.setShowCountdown(it) },
             onRefreshData = { viewModel.refreshData() },
             onDismiss = { showSettings = false },
         )
@@ -254,9 +255,11 @@ private fun SettingsButton(onClick: () -> Unit) {
 private fun ChartSettingsSheet(
     theme: ChartTheme,
     labelSize: PriceLabelSize,
+    showCountdown: Boolean,
     dataStats: DataStats,
     onTheme: (ChartTheme) -> Unit,
     onLabelSize: (PriceLabelSize) -> Unit,
+    onShowCountdown: (Boolean) -> Unit,
     onRefreshData: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -284,6 +287,12 @@ private fun ChartSettingsSheet(
                 PriceLabelSize.entries.forEach { s ->
                     Chip(s.label, s == labelSize) { onLabelSize(s); close() }
                 }
+            }
+
+            Text("Candle-close countdown", color = c.onSurfaceVariant, fontSize = 11.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Chip("On", showCountdown) { onShowCountdown(true) }
+                Chip("Off", !showCountdown) { onShowCountdown(false) }
             }
 
             Text("Data (debug)", color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -437,29 +446,32 @@ private fun StartupOverlay(state: StartupState, modifier: Modifier = Modifier) {
     }
 }
 
-/** Small banner reused by the chart when the market is shut. */
-@Composable
-fun MarketClosedBanner(modifier: Modifier = Modifier) {
-    val c = tradeColors
-    Text(
-        "Market closed",
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(c.surfaceVariant)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clickable { },
-        color = c.warning,
-        fontWeight = FontWeight.Bold,
-        fontSize = 13.sp,
-    )
-}
-
 /** Replaces the order controls while the market is shut for the weekend. */
 @Composable
-private fun ClosedFooter() {
+private fun ClosedFooter(notice: ClosedNotice?) {
     val c = tradeColors
+    // The "Opens in" figure is refreshed on a lightweight timer, so it stays correct even
+    // though no candle closes (and so no ticker fires) while the market is shut.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(notice?.opensAtDisplayMs) {
+        while (true) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000L)
+        }
+    }
+    val text = if (notice == null) {
+        "Market closed."
+    } else {
+        val remaining = (notice.opensAtDisplayMs - now).coerceAtLeast(0L)
+        val hours = remaining / 3_600_000L
+        val minutes = (remaining % 3_600_000L) / 60_000L
+        val open = Instant.ofEpochMilli(notice.opensAtDisplayMs).atZone(ZoneId.systemDefault())
+        val weekday = open.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
+        val hm = String.format(java.util.Locale.US, "%02d:%02d", open.hour, open.minute)
+        "Market closed. Opens in ${hours}h ${minutes}m ($weekday $hm local)"
+    }
     Text(
-        "Market closed — orders resume at the Sunday rollover",
+        text,
         modifier = Modifier.fillMaxWidth().background(c.surfaceVariant).padding(12.dp),
         color = c.onSurfaceVariant,
         fontSize = 12.sp,

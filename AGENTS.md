@@ -135,6 +135,24 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   so the text is never clipped. Only the selected position (tap an entry tag to select,
   tap again to clear) offers "+SL"/"+TP" handles, placed left of the whole tag column.
 
+## Chart scroll and price tag (Phase 3 polish)
+- Horizontal scroll (`ChartMath.clampScroll` / `ChartController.pan`) allows travel past the
+  newest candle: `rightPaddingMax` is 60% of the plot width in candles; the default live-edge
+  padding is `max(10 candles, 12% of width)`. `maxRightPadding` is floored at the default so
+  the live edge is always reachable when fewer than ~17 candles fit.
+- With fewer candles than fit across the plot, the run is parked on the right (newest candle
+  at the default padding) instead of clipped at the left border, on every timeframe.
+- `liveEdgeFollowing` is true only within a +/-1.5-candle band around the live-edge scroll;
+  scrolling into the empty right-hand space (or the past) stops the chart following new
+  candles. `jumpToLatest()` and Fit both re-clamp to the default padding.
+- The current-price tag is slim: 22dp tall, 4dp radius, 12sp semibold, with a notch pointing
+  at the price line and a dot at the last close. `CURRENT_PRICE_TAG_SP` and the gutter padding
+  (`ChartGutter.PAD_DP = 4dp`) must be kept in sync with `LevelGeometry` so the tag fits.
+- `ChartState.countdownMs` (mm:ss under the price tag, `formatCountdown`) is refreshed from
+  `refreshDerived()` on each ticker fire; while the market is shut it is null and the footer
+  shows "Opens in Hh Mm (weekday HH:mm local)" from `MarketCalendar.nextOpen`. The countdown
+  on/off preference lives in `PreferencesStore` (`show_candle_countdown`).
+
 ## Pushing (auth note, current environment)
 - The default `git push` prompts for a username and hangs, so always push non-interactively
   with `GIT_TERMINAL_PROMPT=0`.
