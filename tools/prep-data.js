@@ -6,8 +6,11 @@
  *   node tools/prep-data.js <from YYYY-MM-DD> <to YYYY-MM-DD> [outFile]
  *       Download real candles from Dukascopy in weekly chunks (retry/backoff on 429).
  *
- *   node tools/prep-data.js --from-csv <path.csv> [outFile]
- *       Convert a CSV you downloaded elsewhere into the canonical format.
+ *   node tools/prep-data.js --from-csv <path.csv> [outFile] [--source <label>]
+ *       Convert a CSV you downloaded elsewhere into the canonical format. Prices are
+ *       copied through untouched (XAUUSD may carry 3 decimals such as 3960.885); only
+ *       the timestamp column is normalised. `--source` sets the meta `source` label
+ *       (e.g. `HistData.com`), rendered as `<label> via --from-csv`.
  *
  * Output: `<outFile>` (default app/src/main/assets/xauusd_m1.csv.gz) with columns
  * `ts,o,h,l,c,v`, ts as UTC epoch milliseconds, sorted ascending and de-duplicated, plus a
@@ -59,9 +62,13 @@ function parseDate(value) {
   return d;
 }
 
-/** Quantise a price to the 2-decimal grid real XAUUSD quotes use. */
-function price2(x) {
-  return Math.round(x * 100) / 100;
+/**
+ * Format a price for the canonical CSV. Values are otherwise untouched: XAUUSD quotes may
+ * carry three decimals (e.g. 3960.885) and those must survive verbatim, since the engine
+ * rounds to 0.01 only for display and fills.
+ */
+function formatPrice(x) {
+  return Number.isFinite(x) ? String(x) : "0";
 }
 
 /** Parse a timestamp cell: epoch ms, epoch seconds, or an ISO-8601 date-time string. */
@@ -142,10 +149,10 @@ function normalise(rows) {
 function toCsvLine(row) {
   return [
     row.ts,
-    price2(row.o),
-    price2(row.h),
-    price2(row.l),
-    price2(row.c),
+    formatPrice(row.o),
+    formatPrice(row.h),
+    formatPrice(row.l),
+    formatPrice(row.c),
     row.v ?? 0,
   ].join(",");
 }
@@ -280,11 +287,19 @@ async function main() {
   if (fromCsvIdx >= 0) {
     const csvPath = args[fromCsvIdx + 1];
     if (!csvPath) usage();
-    const outArg = args[fromCsvIdx + 2] || "app/src/main/assets/xauusd_m1.csv.gz";
+    // Optional outFile and --source <label> may follow, in any order.
+    const rest = args.slice(fromCsvIdx + 2);
+    const srcIdx = rest.indexOf("--source");
+    const sourceLabel = srcIdx >= 0 ? rest[srcIdx + 1] : null;
+    const positional = rest.filter(
+      (a, i) => a !== "--source" && !(srcIdx >= 0 && i === srcIdx + 1),
+    );
+    const outArg = positional[0] || "app/src/main/assets/xauusd_m1.csv.gz";
+    const source = sourceLabel ? `${sourceLabel} via --from-csv` : `csv:${csvPath}`;
     const rows = readCsvFile(csvPath);
     console.error(`[prep-data] read ${rows.length} raw rows from ${csvPath}`);
     writeOutput(outArg, rows, {
-      source: `csv:${csvPath}`,
+      source,
       version: `prep-data.js ${toolVersion()} (--from-csv)`,
     });
     return;
