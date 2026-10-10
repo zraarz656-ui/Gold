@@ -49,6 +49,7 @@ import com.tradequest.chart.CrosshairInfo
 import com.tradequest.chart.PriceLabelSize
 import com.tradequest.chart.TIMEFRAMES
 import com.tradequest.chart.formatDateTime
+import com.tradequest.chart.formatCountdown // WATCHDOG
 import com.tradequest.chart.label
 import com.tradequest.data.DatasetImporter
 import com.tradequest.data.DatasetSource
@@ -59,6 +60,7 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter // WATCHDOG
 
 /** The chart must never be shorter than this share of the screen (20:9 phones). */
 private const val MIN_CHART_SCREEN_FRACTION = 0.55f
@@ -82,6 +84,8 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val timeTravelExhausted by viewModel.timeTravelExhausted.collectAsStateWithLifecycle()
     val dataStats by viewModel.dataStats.collectAsStateWithLifecycle()
     val fakeActive by viewModel.fakeActive.collectAsStateWithLifecycle()
+    val histNow by viewModel.histNow.collectAsStateWithLifecycle() // WATCHDOG
+    val lastTickWallMs by viewModel.lastTickWallMs.collectAsStateWithLifecycle() // WATCHDOG
     val datasetChanged by viewModel.datasetChanged.collectAsStateWithLifecycle()
     val submitError by viewModel.submitError.collectAsStateWithLifecycle()
 
@@ -195,6 +199,11 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
             labelSize = controller.state.labelSize,
             showCountdown = controller.state.showCountdown,
             dataStats = dataStats,
+            // WATCHDOG
+            histNow = histNow,
+            displayOffsetMs = offsetMs,
+            lastTickWallMs = lastTickWallMs,
+            countdownMs = controller.state.countdownMs,
             onTheme = { viewModel.setTheme(it) },
             onLabelSize = { viewModel.setLabelSize(it) },
             onShowCountdown = { viewModel.setShowCountdown(it) },
@@ -277,6 +286,11 @@ private fun ChartSettingsSheet(
     labelSize: PriceLabelSize,
     showCountdown: Boolean,
     dataStats: DataStats,
+    // WATCHDOG
+    histNow: Long,
+    displayOffsetMs: Long,
+    lastTickWallMs: Long,
+    countdownMs: Long?,
     onTheme: (ChartTheme) -> Unit,
     onLabelSize: (PriceLabelSize) -> Unit,
     onShowCountdown: (Boolean) -> Unit,
@@ -316,7 +330,7 @@ private fun ChartSettingsSheet(
             }
 
             Text("Data (debug)", color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            DataPanel(dataStats)
+            DataPanel(dataStats, histNow, displayOffsetMs, lastTickWallMs, countdownMs) // WATCHDOG
             OutlinedButton(onClick = onRefreshData, modifier = Modifier.fillMaxWidth()) {
                 Text("Refresh")
             }
@@ -326,11 +340,31 @@ private fun ChartSettingsSheet(
 
 /** Read-only dataset facts for the debug Data panel. */
 @Composable
-private fun DataPanel(stats: DataStats) {
+private fun DataPanel(
+    stats: DataStats,
+    // WATCHDOG: the live clock line (device zone) + last tick/countdown.
+    histNow: Long,
+    displayOffsetMs: Long,
+    lastTickWallMs: Long,
+    countdownMs: Long?,
+) {
     val zone = ZoneId.systemDefault()
     fun utc(ts: Long) = if (ts <= 0L) "—" else formatDateTime(ts, ZoneOffset.UTC)
     fun shown(ts: Long) = if (ts <= 0L) "—" else formatDateTime(ts + stats.offsetMs, zone)
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // WATCHDOG line: all values in the device zone so it matches the phone clock.
+        val hhmmss = DateTimeFormatter.ofPattern("HH:mm:ss")
+        val phoneNow = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(zone).format(hhmmss)
+        val displayedHist = if (histNow <= 0L) "—"
+            else Instant.ofEpochMilli(histNow + displayOffsetMs).atZone(zone).format(hhmmss)
+        val lastTick = if (lastTickWallMs <= 0L) "—"
+            else Instant.ofEpochMilli(lastTickWallMs).atZone(zone).format(hhmmss)
+        val countdown = formatCountdown(countdownMs ?: 0L) // WATCHDOG
+        DataRow(
+            "zone",
+            "zone=$zone  now=$phoneNow  displayedHistNow=$displayedHist  " +
+                "lastTick=$lastTick  countdown=$countdown",
+        )
         DataRow("Rows (1m)", "${stats.rowCount}")
         DataRow("First candle", "${utc(stats.firstTs)} UTC")
         DataRow("", "shows ${shown(stats.firstTs)}")

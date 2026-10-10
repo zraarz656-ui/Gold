@@ -174,6 +174,13 @@ class TradingViewModel @Inject constructor(
     private val _histNow = MutableStateFlow(0L)
     val histNow: StateFlow<Long> = _histNow.asStateFlow()
 
+    // WATCHDOG: last minute tick (wall clock ms + the histNow it carried) for the debug
+    // panel line and the 90 s stall watchdog. Debug only; no trading logic reads these.
+    private val _lastTickWallMs = MutableStateFlow(0L)
+    val lastTickWallMs: StateFlow<Long> = _lastTickWallMs.asStateFlow()
+    @Volatile
+    private var lastTickHistNow: Long = 0L
+
     private val _marketClosed = MutableStateFlow(false)
     val marketClosed: StateFlow<Boolean> = _marketClosed.asStateFlow()
 
@@ -342,6 +349,24 @@ class TradingViewModel @Inject constructor(
         observeTicker()
         observeOrders()
         startDisplayTicker()
+        startTickWatchdog() // WATCHDOG
+    }
+
+    // WATCHDOG: if the replayed clock is running but no minute tick has arrived for 90 s,
+    // log "TICK STALL" with a stack trace. Revert by deleting this function and its call.
+    private fun startTickWatchdog() {
+        viewModelScope.launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(WATCHDOG_MS)
+                val last = _lastTickWallMs.value
+                if (last == 0L) continue
+                val since = System.currentTimeMillis() - last
+                if (since >= WATCHDOG_MS && !isMarketClosed(_histNow.value)) {
+                    Log.e(TAG, "TICK STALL: no minute tick for ${since}ms " +
+                        "histNow=${_histNow.value} lastTickHistNow=$lastTickHistNow", Throwable("TICK STALL"))
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------- display (visual only)
@@ -577,6 +602,8 @@ class TradingViewModel @Inject constructor(
             candles.ticker.collect { visibleTs ->
                 val now = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
                 _histNow.value = now
+                _lastTickWallMs.value = System.currentTimeMillis() // WATCHDOG
+                lastTickHistNow = now // WATCHDOG
                 // Fold every newly visible candle into the engine on the minute tick, so a
                 // market order fills when the next candle closes instead of only on reopen.
                 // runCatchUp is a no-op when there is nothing new to replay.
@@ -964,6 +991,8 @@ class TradingViewModel @Inject constructor(
         private const val LARGE_GAP = 5_000L
         /** Display-path step: 4 updates a second. */
         private const val DISPLAY_TICK_MS = 250L
+        // WATCHDOG: how long without a minute tick before "TICK STALL" is logged.
+        private const val WATCHDOG_MS = 90_000L
         private const val TAG = "TradeQuest"
         private const val NOT_READY_MESSAGE = "Market data is still loading"
     }
