@@ -6,6 +6,8 @@ import com.tradequest.engine.OrderType
 import com.tradequest.engine.Side
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -53,5 +55,32 @@ class PartialCloseTest {
         assertEquals(0.05, closed.single().lots, 1e-9)
         assertEquals("the remainder stays open", 1, open.size)
         assertEquals(0.05, open.single().lots, 1e-9)
+
+        // The closed row has its own positive id (never the position id, never negative) and
+        // points back at the surviving position; the remainder keeps the original id.
+        val row = closed.single()
+        assertTrue("closed row id must be positive, was ${row.id}", row.id > 0L)
+        assertTrue("closed row id must not reuse the position id", row.id != positionId)
+        assertEquals("closed row links to its position", positionId, row.parentPositionId)
+        assertEquals("the open remainder keeps the original id", positionId, open.single().id)
+    }
+
+    @Test
+    fun aFullCloseReusesThePositionIdAndHasNoParent() {
+        h.seed()
+        val vm = h.buildViewModel()
+        h.awaitUntil { vm.ready.value && vm.quote.value.bid > 0.0 }
+
+        h.onMain { vm.placeOrder(OrderRequest(OrderType.MARKET, 0.10, side = Side.LONG)) }
+        h.awaitUntil { h.live(1L).isNotEmpty() }
+        val positionId = h.live(1L).single().id
+
+        h.onMain { vm.closePosition(positionId, null) } // close everything
+
+        h.awaitUntil { h.closed(1L).isNotEmpty() }
+        val row = h.closed(1L).single()
+        assertEquals(positionId, row.id)
+        assertNull(row.parentPositionId)
+        assertTrue("no position survives a full close", h.live(1L).none { it.status == OrderStatus.OPEN })
     }
 }

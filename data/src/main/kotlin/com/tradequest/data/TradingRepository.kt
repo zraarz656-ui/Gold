@@ -137,27 +137,37 @@ class TradingRepository(private val db: TradeQuestDatabase) {
             ?: return null
         val (updated, closed) = result
         val closedRow = TradeProjection.closedRows(seasonId, listOf(closed), existing::get).first()
-        // A partial close keeps the position open on the remainder, so a CLOSED row and an
-        // OPEN row would otherwise share the position id — a primary-key collision. Give the
-        // closed row its own id only in that case; a full close still reuses the position id.
+        // A partial close keeps the position open on the remainder. The closed row then takes
+        // a fresh AUTOINCREMENT id and points at the position through `parentPositionId`; the
+        // remainder keeps the original position id. A full close reuses the position id.
         val remainsOpen = updated.positions.any { it.id == positionId }
-        val storedRow = if (remainsOpen) closedRow.copy(id = nextClosedRowId(seasonId)) else closedRow
         db.withTransaction {
             db.tradeOrderDao().deleteLive(seasonId)
             db.tradeOrderDao().insertAll(TradeProjection.pending(seasonId, updated))
             db.tradeOrderDao().insertAll(TradeProjection.open(seasonId, updated))
-            db.tradeOrderDao().insertAll(listOf(storedRow))
+            // Insert the closed row last so a partial close is never mistaken for a live row.
+            // A surviving position keeps its id; the closed row gets its own id from the
+            // dedicated closed-row sequence and links back via parentPositionId.
+            val storedRow = if (remainsOpen) {
+                closedRow.copy(id = nextClosedRowId(), parentPositionId = positionId)
+            } else {
+                closedRow
+            }
+            db.tradeOrderDao().insert(storedRow)
             db.settingsDao().put(SettingEntity(AccountCheckpoint.KEY, AccountCheckpoint.encode(AccountStateDto.from(updated))))
         }
         return closed
     }
 
     /**
-     * A unique, negative id for a closed row that must coexist with its still-open position.
-     * Negative ids never collide with the positive position ids used by live and engine rows.
+     * The next id from the dedicated closed-row sequence. It lives far above the engine's
+     * small position ids, so a closed row can coexist with its open remainder without ever
+     * colliding with a position or order id.
      */
-    private suspend fun nextClosedRowId(seasonId: Long): Long =
-        -(db.tradeOrderDao().closedCount(seasonId) + 1L)
+    private suspend fun nextClosedRowId(): Long {
+        val max = db.tradeOrderDao().maxIdAtLeast(TradeQuestDatabase.CLOSED_ROW_ID_BASE)
+        return (max ?: (TradeQuestDatabase.CLOSED_ROW_ID_BASE - 1L)) + 1L
+    }
 
     private suspend fun loadState(seasonId: Long): AccountState {
         val balance = db.seasonDao().byId(seasonId)?.startBalance ?: 0.0

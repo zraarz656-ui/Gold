@@ -156,6 +156,10 @@ interface TradeOrderDao {
     @Query("SELECT COUNT(*) FROM trade_order WHERE seasonId = :seasonId AND status = 'CLOSED'")
     suspend fun closedCount(seasonId: Long): Int
 
+    /** Highest id at or above [min], or null when none; used to advance the closed-row sequence. */
+    @Query("SELECT MAX(id) FROM trade_order WHERE id >= :min")
+    suspend fun maxIdAtLeast(min: Long): Long?
+
     @Query("DELETE FROM trade_order")
     suspend fun deleteAll()
 

@@ -27,6 +27,12 @@ android {
         arg("room.schemaLocation", "$projectDir/schemas")
     }
 
+    // Expose the exported schemas to Robolectric unit tests so MigrationTestHelper can
+    // load the old (v3) schema and validate the migrated (v4) result.
+    sourceSets {
+        getByName("test").assets.srcDirs(files("$projectDir/schemas"))
+    }
+
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }

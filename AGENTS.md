@@ -241,6 +241,28 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   `(close − entry) × lots × 100 − $7 × lots` (side-aware). Shown in the card as
   `gross … · commission … · net …`. Tests with hand-computed numbers: `PnlBreakdownTest`.
 
+## Closed-row ids: dedicated sequence + parentPositionId (no negative sentinels)
+- A partial close keeps the position open on the remainder, so the CLOSED row and the OPEN
+  row cannot share a primary key. `trade_order.id` is now AUTOINCREMENT (DB v4). A partial
+  close's closed row takes an id from a dedicated closed-row sequence
+  (`TradeQuestDatabase.CLOSED_ROW_ID_BASE = 1_000_000_000`; next id =
+  `maxIdAtLeast(BASE) + 1`), so it can never collide with the engine's small position ids
+  (1, 2, ...). The open remainder keeps the original position id.
+- New nullable column `trade_order.parentPositionId` links a partial-close row back to the
+  position it came from. Set only on the partial-close path in
+  `TradingRepository.closePosition`; a full close reuses the position id and has a null parent.
+- `MIGRATION_3_4` rebuilds `trade_order` (AUTOINCREMENT + parentPositionId). Positive ids are
+  preserved exactly; legacy negative ids are remapped into the closed-row range with a null
+  parent. The old sentinel was `-(closedCount + 1)` — a plain sequence, **not** the parent
+  position id — so the parent cannot be recovered and is left null (documented in the code).
+  `TradeQuestDatabase.MIGRATIONS` (the ordered chain) is public for the migration tests.
+- Tests: `PartialCloseTest` (half close -> one closed row with a positive id != position id
+  and `parentPositionId` = position, remainder keeps the id; full close -> reuses the id, null
+  parent) and `MigrationV3ToV4Test` (`MigrationTestHelper` opens a v3 database, runs the
+  migrations, validates against `4.json`, and asserts no row/field is lost and negative ids
+  become distinct positive closed-range ids). The exported schemas are wired as test assets in
+  `data/build.gradle.kts` (`sourceSets["test"].assets.srcDirs(files("$projectDir/schemas"))`).
+
 ## Serving the APK (publish dir)
 - The work hosts serve `/workspace/serve` on ports 12000/12001. `python3 -m http.server`
   started with a plain `&` dies with its parent shell, so start it detached with `setsid`

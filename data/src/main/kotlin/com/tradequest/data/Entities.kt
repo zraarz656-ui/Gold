@@ -93,6 +93,12 @@ data class TradeOrder(
     val note: String?,
     /** Trailing-stop candidate computed on the last candle; applied on the next one. */
     val pendingTrail: Double? = null,
+    /**
+     * The position this closed row belongs to. Set on a partial close, where the closed row
+     * gets its own [id] from the table's AUTOINCREMENT sequence and the remainder keeps the
+     * original position id. Null for a full close (the closed row then reuses the position id).
+     */
+    val parentPositionId: Long? = null,
 )
 
 /** Per-day rollup for the daily loss limit and the equity curve. */
