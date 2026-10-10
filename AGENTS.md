@@ -175,6 +175,25 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   `_histNow` and the current quote. `OrderStatus` gained `QUEUED` (between PENDING and OPEN);
   `OrderStatus.QUEUED` behaves like PENDING in the chart overlays and the live-orders queries.
 
+## Trading is gated on data readiness (the "no orders after minimize/restore" bug)
+- A submit is dropped when the app is not yet ready. The old flag `ready` was a plain
+  `var` set at the *end* of `bootstrap()`, after `startSeason()` — but `startSeason()` sets
+  `_quote` inside `loadInitialWindow()`. There was therefore a window (most reachable after
+  a process restart following minimize) in which the chart showed live prices while every
+  Buy/Sell early-returned with `W/TradeQuest: placeOrder: early return - Market data is
+  still loading`. Symptom: "price updates, orders do nothing".
+- Fix: `startSeason()` now publishes `_histNow`, then calls `markReady()` (attaches the
+  ticker and order observers) **before** catch-up/window loading, so a submit is only ever
+  gated on real prerequisites (active season, lot size, a live quote for a market order,
+  not over the daily loss limit). `markReady()` is idempotent.
+- Readiness is exposed as `StateFlow<Boolean> ready` for the UI/tests. `placeOrder` logs
+  every step (tag `TradeQuest`) and sets `submitError` for a snackbar when it must refuse.
+  A `bootstrap()` failure is caught and shown as `StartupPhase.ERROR` instead of leaving the
+  app live-looking but unable to trade.
+- Regression test `OrderSubmitAfterResumeTest` drives the real ViewModel through
+  launch → resume → submit and asserts a position opens; `submitIsAcceptedAsSoonAsTheQuoteIsLive`
+  pins the exact failure window.
+
 ## Pushing (auth note, current environment)
 - The default `git push` prompts for a username and hangs, so always push non-interactively
   with `GIT_TERMINAL_PROMPT=0`.

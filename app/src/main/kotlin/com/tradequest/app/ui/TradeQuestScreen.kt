@@ -21,6 +21,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -77,6 +79,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val dataStats by viewModel.dataStats.collectAsStateWithLifecycle()
     val fakeActive by viewModel.fakeActive.collectAsStateWithLifecycle()
     val datasetChanged by viewModel.datasetChanged.collectAsStateWithLifecycle()
+    val submitError by viewModel.submitError.collectAsStateWithLifecycle()
 
     if (startup.phase == StartupPhase.ERROR) {
         DataErrorScreen(startup.error ?: "Market data is unavailable.", modifier)
@@ -99,76 +102,86 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     var showResetConfirm by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(submitError) {
+        submitError?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearSubmitError()
+        }
+    }
     val controller = viewModel.controller
     val c = tradeColors
     val screenHeightDp = LocalConfiguration.current.screenHeightDp.dp
     val minChartHeight = screenHeightDp * MIN_CHART_SCREEN_FRACTION
 
-    Column(modifier.fillMaxSize().background(c.surface)) {
-        if (fakeActive) FakeDataBanner()
-        EquityStrip(strip, quote)
-        // Tabs, timeframes and the settings menu all share one row.
-        TradeQuestHeader(
-            tab = tab,
-            liveOrders = orders.count {
-                it.status == OrderStatus.OPEN || it.status == OrderStatus.PENDING || it.status == OrderStatus.QUEUED
-            },
-            timeframe = controller.state.timeframe,
-            onTab = { tab = it },
-            onTimeframe = { viewModel.setTimeframe(it) },
-            onSettings = { showSettings = true },
-        )
+    Box(modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().background(c.surface)) {
+            if (fakeActive) FakeDataBanner()
+            EquityStrip(strip, quote)
+            // Tabs, timeframes and the settings menu all share one row.
+            TradeQuestHeader(
+                tab = tab,
+                liveOrders = orders.count {
+                    it.status == OrderStatus.OPEN || it.status == OrderStatus.PENDING || it.status == OrderStatus.QUEUED
+                },
+                timeframe = controller.state.timeframe,
+                onTab = { tab = it },
+                onTimeframe = { viewModel.setTimeframe(it) },
+                onSettings = { showSettings = true },
+            )
 
-        if (tab == 0) {
-            Box(Modifier.weight(1f).heightIn(min = minChartHeight)) {
-                ChartPanel(
-                    controller = controller,
-                    modifier = Modifier.fillMaxSize(),
-                    crosshair = crosshair,
-                    onCrosshairChange = { crosshair = it },
-                    onEntryGroupTap = { tab = 1 },
-                    onLevelOutcome = { outcome -> scope.launch { viewModel.applyLevelOutcome(outcome) } },
-                    onMessage = { message = it },
-                )
-                message?.let { msg ->
-                    LevelMessageBanner(msg) { message = null }
+            if (tab == 0) {
+                Box(Modifier.weight(1f).heightIn(min = minChartHeight)) {
+                    ChartPanel(
+                        controller = controller,
+                        modifier = Modifier.fillMaxSize(),
+                        crosshair = crosshair,
+                        onCrosshairChange = { crosshair = it },
+                        onEntryGroupTap = { tab = 1 },
+                        onLevelOutcome = { outcome -> scope.launch { viewModel.applyLevelOutcome(outcome) } },
+                        onMessage = { message = it },
+                    )
+                    message?.let { msg ->
+                        LevelMessageBanner(msg) { message = null }
+                    }
+                }
+                if (marketClosed) {
+                    ClosedFooter(closedNotice)
+                } else {
+                    sheetFor?.let { type ->
+                        OrderSheet(
+                            quote = quote,
+                            equity = strip.equity,
+                            riskPercent = risk,
+                            initialType = type,
+                            initialSide = sheetSide,
+                            onDismiss = { sheetFor = null },
+                            onPlace = { viewModel.placeOrder(it) },
+                        )
+                    } ?: BuySellBar(quote, onOpen = { type, side -> sheetFor = type; sheetSide = side })
+                }
+            } else {
+                Box(Modifier.weight(1f)) {
+                    PositionsScreen(
+                        orders = orders,
+                        closed = history,
+                        displayOffsetMs = offsetMs,
+                        bid = quote.bid,
+                        onClose = { id, lots -> viewModel.closePosition(id, lots) },
+                        onCancel = { viewModel.cancelOrder(it) },
+                        onEditStops = { id, sl, tp -> viewModel.editStops(id, sl, tp) },
+                        onResetSeason = if (BuildConfig.DEBUG) {
+                            { showResetConfirm = true }
+                        } else null,
+                        onTimeTravel = if (BuildConfig.DEBUG) {
+                            { minutes -> viewModel.debugTimeTravel(minutes) }
+                        } else null,
+                        timeTravelExhausted = timeTravelExhausted,
+                    )
                 }
             }
-            if (marketClosed) {
-                ClosedFooter(closedNotice)
-            } else {
-                sheetFor?.let { type ->
-                    OrderSheet(
-                        quote = quote,
-                        equity = strip.equity,
-                        riskPercent = risk,
-                        initialType = type,
-                        initialSide = sheetSide,
-                        onDismiss = { sheetFor = null },
-                        onPlace = { viewModel.placeOrder(it) },
-                    )
-                } ?: BuySellBar(quote, onOpen = { type, side -> sheetFor = type; sheetSide = side })
-            }
-        } else {
-            Box(Modifier.weight(1f)) {
-                PositionsScreen(
-                    orders = orders,
-                    closed = history,
-                    displayOffsetMs = offsetMs,
-                    bid = quote.bid,
-                    onClose = { id, lots -> viewModel.closePosition(id, lots) },
-                    onCancel = { viewModel.cancelOrder(it) },
-                    onEditStops = { id, sl, tp -> viewModel.editStops(id, sl, tp) },
-                    onResetSeason = if (BuildConfig.DEBUG) {
-                        { showResetConfirm = true }
-                    } else null,
-                    onTimeTravel = if (BuildConfig.DEBUG) {
-                        { minutes -> viewModel.debugTimeTravel(minutes) }
-                    } else null,
-                    timeTravelExhausted = timeTravelExhausted,
-                )
-            }
         }
+        SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
     }
 
     if (showSettings) {

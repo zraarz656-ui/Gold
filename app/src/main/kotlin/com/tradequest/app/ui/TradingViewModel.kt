@@ -1,5 +1,6 @@
 package com.tradequest.app.ui
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tradequest.chart.ChartController
@@ -54,6 +55,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -175,13 +177,28 @@ class TradingViewModel @Inject constructor(
     private val _datasetChanged = MutableStateFlow(false)
     val datasetChanged: StateFlow<Boolean> = _datasetChanged.asStateFlow()
 
+    /** Last order-submit failure, for a snackbar. Null when the last submit was accepted. */
+    private val _submitError = MutableStateFlow<String?>(null)
+    val submitError: StateFlow<String?> = _submitError.asStateFlow()
+
     private var news: List<NewsEvent> = emptyList()
     private var seasonId: Long = 0L
     private var offsetMs: Long = 0L
-    private var ready = false
+
+    /**
+     * True only once bootstrap has finished loading the window and attaching observers.
+     * Exposed so the UI (and tests) can distinguish "data ready to trade" from the earlier
+     * moment the startup phase reports READY, which precedes window loading.
+     */
+    private val _ready = MutableStateFlow(false)
+    val ready: StateFlow<Boolean> = _ready.asStateFlow()
 
     /** Serialises catch-up: the minute tick, resume and debug travel can all trigger it. */
     private val catchUpMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** Set while a catch-up run holds [catchUpMutex]; a submit that has to wait logs it. */
+    @Volatile
+    private var catchUpRunning = false
 
     /** Historical-clock shift; displayed times = stored UTC + this, in the device zone. */
     private val _displayOffsetMs = MutableStateFlow(0L)
@@ -204,7 +221,17 @@ class TradingViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            bootstrap()
+            try {
+                bootstrap()
+            } catch (t: Throwable) {
+                // A bootstrap failure used to leave the app showing live prices with every
+                // order silently dropped. Surface it instead of pretending to be ready.
+                Log.e(TAG, "bootstrap failed", t)
+                _startup.value = StartupState(
+                    phase = StartupPhase.ERROR,
+                    error = t.message ?: t::class.java.simpleName,
+                )
+            }
         }
     }
 
@@ -246,9 +273,7 @@ class TradingViewModel @Inject constructor(
         }
 
         startSeason()
-        ready = true
-        observeTicker()
-        observeOrders()
+        markReady()
     }
 
     private fun missingAssetMessage(result: ImportResult): String {
@@ -260,6 +285,14 @@ class TradingViewModel @Inject constructor(
             "The app will not run on generated placeholder data."
     }
 
+    /** Attach the tick/order observers and mark trading as ready. Idempotent. */
+    private fun markReady() {
+        if (_ready.value) return
+        _ready.value = true
+        observeTicker()
+        observeOrders()
+    }
+
     /** Season-dependent startup, shared by first launch and the debug reset. */
     private suspend fun startSeason() {
         val season = seasons.ensureSeason()
@@ -267,6 +300,9 @@ class TradingViewModel @Inject constructor(
         offsetMs = season.offsetMs
         _displayOffsetMs.value = offsetMs
         controller.setDisplayOffset(offsetMs)
+        // Publish the clock first so a submit arriving during catch-up has a valid histNow.
+        _histNow.value = seasons.histNow(season)
+        markReady()
         runCatchUp(initial = true)
         loadInitialWindow()
     }
@@ -278,11 +314,7 @@ class TradingViewModel @Inject constructor(
             _datasetChanged.value = false
             startSeason()
             refreshDerived()
-            if (!ready) {
-                ready = true
-                observeTicker()
-                observeOrders()
-            }
+            if (!_ready.value) markReady()
         }
     }
 
@@ -322,7 +354,12 @@ class TradingViewModel @Inject constructor(
     }
 
     private suspend fun runCatchUp(initial: Boolean) {
-        catchUpMutex.withLock { runCatchUpLocked(initial) }
+        catchUpRunning = true
+        try {
+            catchUpMutex.withLock { runCatchUpLocked(initial) }
+        } finally {
+            catchUpRunning = false
+        }
     }
 
     private suspend fun runCatchUpLocked(initial: Boolean) {
@@ -594,7 +631,7 @@ class TradingViewModel @Inject constructor(
 
     /** Re-run catch-up when the app comes back to the foreground. */
     fun onResume() {
-        if (!ready) return
+        if (!_ready.value) return
         viewModelScope.launch { runCatchUp(initial = false) }
     }
 
@@ -632,13 +669,56 @@ class TradingViewModel @Inject constructor(
         RiskCalculator.lotsForRisk(_strip.value.equity, _riskPercent.value, stopDistance)
 
     fun placeOrder(request: OrderRequest) {
+        Log.i(TAG, "placeOrder: tap received request=$request")
         viewModelScope.launch {
             val quote = _quote.value
-            catchUpMutex.withLock {
-                trading.place(seasonId, request, _histNow.value, bid = quote.bid, ask = quote.ask)
+            val histNow = _histNow.value
+            val marketClosed = isMarketClosed(histNow)
+            val state = loadAccountState()
+            Log.i(
+                TAG,
+                "placeOrder: quote=${quote.bid}/${quote.ask} spread=${quote.spread} " +
+                    "histNow=$histNow seasonId=$seasonId marketClosed=$marketClosed " +
+                    "ready=${_ready.value} scopeActive=${viewModelScope.isActive} balance=${state.balance} " +
+                    "positions=${state.positions.size} orders=${state.orders.size} " +
+                    "dailyBlocked=${state.dailyBlocked}",
+            )
+
+            val reason = when {
+                !_ready.value -> "$NOT_READY_MESSAGE (still importing or catching up)"
+                seasonId <= 0L -> "no active season"
+                request.lots <= 0.0 -> "lot size must be greater than 0"
+                quote.bid <= 0.0 && request.type == OrderType.MARKET -> "no live quote yet"
+                state.dailyBlocked -> "daily loss limit reached; new orders are blocked today"
+                else -> null
             }
-            refreshDerived()
+            if (reason != null) {
+                Log.w(TAG, "placeOrder: early return - $reason")
+                _submitError.value = reason
+                return@launch
+            }
+            if (catchUpRunning) {
+                Log.i(TAG, "placeOrder: waiting for the in-flight catch-up to release the lock")
+            }
+
+            try {
+                catchUpMutex.withLock {
+                    val id = trading.place(seasonId, request, histNow, bid = quote.bid, ask = quote.ask)
+                    Log.i(TAG, "placeOrder: accepted id=$id type=${request.type} side=${request.side}")
+                }
+                _submitError.value = null
+                refreshDerived()
+                Log.i(TAG, "placeOrder: done liveOrders=${db.tradeOrderDao().live(seasonId).size}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "placeOrder: failed to submit", t)
+                _submitError.value = "Order failed: ${t.message ?: t::class.simpleName}"
+            }
         }
+    }
+
+    /** Clear the snackbar once the UI has shown [submitError]. */
+    fun clearSubmitError() {
+        _submitError.value = null
     }
 
     fun cancelOrder(orderId: Long) {
@@ -673,6 +753,8 @@ class TradingViewModel @Inject constructor(
 
     companion object {
         private const val LARGE_GAP = 5_000L
+        private const val TAG = "TradeQuest"
+        private const val NOT_READY_MESSAGE = "Market data is still loading"
     }
 }
 
