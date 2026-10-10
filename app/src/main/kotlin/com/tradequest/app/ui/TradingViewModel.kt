@@ -181,6 +181,16 @@ class TradingViewModel @Inject constructor(
     @Volatile
     private var lastTickHistNow: Long = 0L
 
+    // Wall time of the last accepted order submission; a second tap within
+    // SUBMIT_DEBOUNCE_MS is coalesced. Lives only in memory: after process death the
+    // platform's double-tap window has long elapsed, so no persisted guard is needed.
+    @Volatile
+    private var lastSubmitWallMs: Long = 0L
+
+    /** Orders actually submitted to the engine (post-debounce). Diagnostic; no logic reads it. */
+    private val _submitCount = MutableStateFlow(0)
+    val submitCount: StateFlow<Int> = _submitCount.asStateFlow()
+
     private val _marketClosed = MutableStateFlow(false)
     val marketClosed: StateFlow<Boolean> = _marketClosed.asStateFlow()
 
@@ -873,6 +883,19 @@ class TradingViewModel @Inject constructor(
 
     fun placeOrder(request: OrderRequest) {
         Log.i(TAG, "placeOrder: tap received request=$request")
+        // Coalesce a rapid double tap into one submission. Without this, two taps inside the
+        // platform's double-tap window (~300 ms) would open two positions. Fill/stop logic is
+        // untouched: a legitimately debounced tap is dropped before it reaches the engine.
+        val tapAt = System.currentTimeMillis()
+        if (tapAt - lastSubmitWallMs < SUBMIT_DEBOUNCE_MS) {
+            Log.i(
+                TAG,
+                "placeOrder: coalesced; duplicate tap ${tapAt - lastSubmitWallMs}ms after the last",
+            )
+            return
+        }
+        lastSubmitWallMs = tapAt
+        _submitCount.value += 1
         viewModelScope.launch {
             val quote = _quote.value
             val histNow = _histNow.value
@@ -991,6 +1014,8 @@ class TradingViewModel @Inject constructor(
         private const val LARGE_GAP = 5_000L
         /** Display-path step: 4 updates a second. */
         private const val DISPLAY_TICK_MS = 250L
+        /** A second order tap within this window is coalesced into the first. */
+        private const val SUBMIT_DEBOUNCE_MS = 400L
         // WATCHDOG: how long without a minute tick before "TICK STALL" is logged.
         private const val WATCHDOG_MS = 90_000L
         private const val TAG = "TradeQuest"
