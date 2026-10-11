@@ -288,6 +288,24 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   alignment modifier, or firmware gesture navigation eating corner taps. If it reproduces,
   log inside `autoFitPrice`/`resetPriceScale` on the device before changing more.
 
+- **Tick off-boundary + wrong countdown after resume.** The ticker emitted a tick and *then*
+  `delay(millisToNextMinute(now))`. On a suspended resume the pending `delay` could resume and
+  fire at an arbitrary instant, and the next tick was a full minute from there — so `lastTick`
+  showed an off-minute time (e.g. 09:09:42) and the countdown showed the time from that late
+  tick (00:18 at :56) instead of the real time to the next :00. Also, the `CandleRepository.ticker`
+  is a `StateFlow` seeded at 0; `collect` replays that 0 at subscribe, so app open stamped an
+  off-minute `lastTick` before any boundary tick. Fixes: (1) `LiveClock.start` waits for the next
+  boundary *before* its first tick so every tick is boundary-aligned; `realign(scope)` (called on
+  `ON_RESUME` from `MainActivity`) cancels any delay suspended across the boundary and waits again.
+  (2) The countdown is derived from `nextMinuteBoundary(now) - now` — from the wall clock, not the
+  last tick — both in `refreshDerived` and on every 4 Hz display frame. (3) The ticker's 0 seed is
+  ignored (`if (visibleTs <= 0L) return`). The wall clock is injected (`() -> Long`) so tests freeze
+  it; Hilt binds the system clock in `AppModule`. Tests: `LiveClockTest` (schedule math) and
+  `ResumeClockTest` (open does not stamp a tick; resume derives the countdown from the boundary).
+  Note: with a suspended coroutine the old code could stall the ticker; the new loop `delay`s
+  *first*, so a resume realigns rather than emitting a late tick. A third requirement (cut off in
+  the log) is still to be confirmed with the user.
+
 ## Serving the APK (publish dir)
 - The work hosts serve `/workspace/serve` on ports 12000/12001. `python3 -m http.server`
   started with a plain `&` dies with its parent shell, so start it detached with `setsid`
