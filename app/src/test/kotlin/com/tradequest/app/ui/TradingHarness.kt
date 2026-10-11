@@ -73,9 +73,16 @@ class TradingHarness {
             now = { clockMs },
         )
 
-    /** Seed candles up to (but not including) histNow plus a season and import flags. */
-    fun seed() = runBlocking {
-        val first = openNow - 100 * min
+    /** A real minute ticker wired to the harness clock, as the app's singleton is. */
+    fun buildLiveClock(): com.tradequest.app.clock.LiveClock =
+        com.tradequest.app.clock.LiveClock(
+            SeasonRepository(db) { clockMs },
+            candles,
+        ) { clockMs }
+
+    /** Seed candles up to (but not including) [anchor] plus a season and import flags. */
+    fun seed(anchor: Long = openNow) = runBlocking {
+        val first = anchor - 100 * min
         db.candleDao().insertAll(
             (0 until 100).map { i ->
                 val ts = first + i * min
@@ -85,11 +92,11 @@ class TradingHarness {
         )
         db.seasonDao().insert(
             Season(
-                startedAt = openNow - 7 * 24 * 60 * min,
+                startedAt = anchor - 7 * 24 * 60 * min,
                 offsetMs = 0L,
                 startBalance = 10_000.0,
                 status = SeasonStatus.ACTIVE,
-                lastProcessedTs = openNow - 10 * min,
+                lastProcessedTs = anchor - 10 * min,
             ),
         )
         db.settingsDao().put(SettingEntity(SettingsRepository.IMPORT_DONE, "100000"))
