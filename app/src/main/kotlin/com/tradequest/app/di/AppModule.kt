@@ -1,6 +1,7 @@
 package com.tradequest.app.di
 
 import android.content.Context
+import com.tradequest.app.clock.LiveClock
 import com.tradequest.data.AndroidAssetSource
 import com.tradequest.data.AssetSource
 import com.tradequest.data.CandleDao
@@ -66,4 +67,15 @@ object AppModule {
     @Provides
     @Singleton
     fun catchUpProcessor(db: TradeQuestDatabase): CatchUpProcessor = CatchUpProcessor(db)
+
+    @Provides
+    @Singleton
+    fun liveClock(
+        seasons: SeasonRepository,
+        candles: CandleRepository,
+    ): LiveClock = LiveClock(seasons, candles) { System.currentTimeMillis() }
+
+    /** The wall clock, injectable so tests can freeze it. */
+    @Provides
+    fun wallClock(): () -> Long = { System.currentTimeMillis() }
 }

@@ -1,6 +1,7 @@
 package com.tradequest.app.clock
 
 import com.tradequest.data.CandleRepository
+import com.tradequest.data.Season
 import com.tradequest.data.SeasonRepository
 import com.tradequest.engine.ClockEngine
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +33,7 @@ data class ClockTick(
 class LiveClock @Inject constructor(
     private val seasons: SeasonRepository,
     private val candles: CandleRepository,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val _tick = MutableStateFlow<ClockTick?>(null)
     val tick: StateFlow<ClockTick?> = _tick.asStateFlow()
@@ -49,23 +51,52 @@ class LiveClock @Inject constructor(
                     delay(1_000L)
                     continue
                 }
-                val realNow = System.currentTimeMillis()
-                val histNow = seasons.histNow(season, realNow)
-                val visible = ClockEngine.lastVisibleCandleTs(histNow)
-                _tick.value = ClockTick(realNow, histNow, visible)
-                candles.publish(visible)
-                delay(millisToNextMinute(realNow))
+                // Wait for the next real minute boundary BEFORE the first tick, so every tick
+                // is boundary-aligned and none fires at an arbitrary off-minute instant. The
+                // chart is already live from catch-up, so it does not need a tick to open.
+                delay(delayToNextMinute(clock()))
+                emitTick(season)
             }
         }
     }
 
-    /** A few ms past the next real minute boundary. */
-    private fun millisToNextMinute(realNow: Long): Long {
-        val remainder = realNow % MINUTE_MS
-        return MINUTE_MS - remainder + 50L
+    /**
+     * Re-base the schedule onto the next real minute boundary. Call on resume: a delay that
+     * was suspended while backgrounded may otherwise resume and fire a late, off-minute tick.
+     * Cancelling and restarting waits for the boundary again, so the next tick is aligned.
+     */
+    fun realign(scope: CoroutineScope) {
+        job?.cancel()
+        job = null
+        start(scope)
+    }
+
+    private suspend fun emitTick(season: Season) {
+        val realNow = clock()
+        val histNow = seasons.histNow(season, realNow)
+        val visible = ClockEngine.lastVisibleCandleTs(histNow)
+        _tick.value = ClockTick(realNow, histNow, visible)
+        candles.publish(visible)
     }
 
     companion object {
         const val MINUTE_MS = 60_000L
+
+        /** A small lag past the boundary so the clock has definitely ticked over. */
+        const val TICK_LAG_MS = 50L
+
+        /** A few ms past the next real minute boundary, measured from that boundary. */
+        fun delayToNextMinute(now: Long): Long =
+            nextMinuteBoundary(now) - now + TICK_LAG_MS
+
+        /**
+         * The next real minute boundary at or after [now] (its seconds are 00.000). The
+         * countdown and the tick delay are both derived from this, so they always equal the
+         * wall clock's time to the next :00 and never depend on when a tick last fired.
+         */
+        fun nextMinuteBoundary(now: Long): Long {
+            val remainder = Math.floorMod(now, MINUTE_MS)
+            return now + (MINUTE_MS - remainder)
+        }
     }
 }

@@ -3,6 +3,8 @@ package com.tradequest.app.ui
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.tradequest.app.clock.LiveClock
+import com.tradequest.app.clock.collectRestarting
 import com.tradequest.chart.ChartController
 import com.tradequest.chart.ChartMarker
 import com.tradequest.chart.ChartOrderLine
@@ -11,7 +13,6 @@ import com.tradequest.chart.LevelOutcome
 import com.tradequest.chart.LiveDisplayPath
 import com.tradequest.chart.OrderLineKind
 import com.tradequest.chart.PriceLabelSize
-import com.tradequest.app.clock.collectRestarting
 import com.tradequest.data.AccountCheckpoint
 import com.tradequest.data.AssetSource
 import com.tradequest.data.CandleRepository
@@ -138,6 +139,8 @@ class TradingViewModel @Inject constructor(
     private val preferences: PreferencesStore,
     private val catchUp: CatchUpProcessor,
     assetSource: AssetSource,
+    /** The wall clock; overridable in tests. Hilt binds the system clock in [AppModule]. */
+    private val now: () -> Long,
 ) : ViewModel() {
 
     val controller = ChartController(emptyList())
@@ -411,6 +414,17 @@ class TradingViewModel @Inject constructor(
 
     /** Recompute the screen-only price from the last closed candle and the replayed clock. */
     private fun publishDisplayTick() {
+        // The countdown is cosmetic display state, so derive it from the live wall clock on
+        // every frame rather than snapshotting it at the last tick. That is what makes it
+        // count down smoothly and match the phone clock's next :00.
+        if (_histNow.value > 0L) {
+            if (isMarketClosed(_histNow.value)) {
+                controller.setCountdown(null)
+            } else {
+                val t = now()
+                controller.setCountdown(LiveClock.nextMinuteBoundary(t) - t)
+            }
+        }
         val base = _quote.value
         // Until the authoritative quote is live we have no spread to mirror; leave the
         // screen-only quote alone rather than publishing one with a zero spread.
@@ -631,17 +645,23 @@ class TradingViewModel @Inject constructor(
                     Log.e(TAG, "observeTicker: collector failed; restarting", t) // WATCHDOG
                 },
             ) { visibleTs ->
-                val now = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
-                _histNow.value = now
-                _lastTickWallMs.value = System.currentTimeMillis() // WATCHDOG
-                lastTickHistNow = now // WATCHDOG
+                // The ticker is a StateFlow seeded at 0; `collect` replays that value at
+                // subscribe. It is not a real published candle, so ignore it: otherwise app
+                // open would stamp lastTick (and the countdown) at an arbitrary off-minute
+                // instant, before the first boundary tick.
+                if (visibleTs <= 0L) return@collectRestarting
+                val tickHistNow = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
+                _histNow.value = tickHistNow
+                // now() is the injected wall clock (System.currentTimeMillis() in the app).
+                _lastTickWallMs.value = now()
+                lastTickHistNow = tickHistNow // WATCHDOG
                 // Fold every newly visible candle into the engine on the minute tick, so a
                 // market order fills when the next candle closes instead of only on reopen.
                 // runCatchUp is a no-op when there is nothing new to replay.
                 runCatchUp(initial = false)
-                val latest = candles.latestClosed(now)
+                val latest = candles.latestClosed(tickHistNow)
                 if (latest != null) {
-                    controller.appendM1(latest, now + offsetMs)
+                    controller.appendM1(latest, tickHistNow + offsetMs)
                 }
                 _quote.value = quoteFrom(latest)
                 refreshDerived()
@@ -830,7 +850,13 @@ class TradingViewModel @Inject constructor(
             controller.setCountdown(null)
         } else {
             _closedNotice.value = null
-            if (_histNow.value > 0L) controller.setCountdown(candles.remainingToClose(_histNow.value))
+            // Derive the countdown from the wall clock's next minute boundary, not from the
+            // last tick's histNow. This keeps it equal to the real time to the next :00 even
+            // when a tick fired off-boundary or the clock resumed mid-minute.
+            if (_histNow.value > 0L) {
+                val boundary = LiveClock.nextMinuteBoundary(now())
+                controller.setCountdown(boundary - now())
+            }
         }
         sampleEquity(season, state, equity, margin)
         // Point the display path at the last CLOSED candle, so the visual walk is a band

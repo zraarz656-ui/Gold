@@ -53,20 +53,25 @@ class TradingHarness {
         db = Room.inMemoryDatabaseBuilder(context, TradeQuestDatabase::class.java)
             .allowMainThreadQueries()
             .build()
+        // One repository shared by the ViewModel and the clock, as the app's singleton is:
+        // the ViewModel must observe the candles the clock publishes.
+        candles = CandleRepository(db)
     }
 
     fun tearDown() = db.close()
 
-    fun buildViewModel(): TradingViewModel = TradingViewModel(
-        db = db,
-        seasons = SeasonRepository(db) { clockMs },
-        trading = TradingRepository(db),
-        candles = CandleRepository(db).also { candles = it },
-        settings = SettingsRepository(db),
-        preferences = PreferencesStore(context),
-        catchUp = CatchUpProcessor(db),
-        assetSource = assets,
-    )
+    fun buildViewModel(): TradingViewModel =
+        TradingViewModel(
+            db = db,
+            seasons = SeasonRepository(db) { clockMs },
+            trading = TradingRepository(db),
+            candles = candles,
+            settings = SettingsRepository(db),
+            preferences = PreferencesStore(context),
+            catchUp = CatchUpProcessor(db),
+            assetSource = assets,
+            now = { clockMs },
+        )
 
     /** Seed candles up to (but not including) histNow plus a season and import flags. */
     fun seed() = runBlocking {

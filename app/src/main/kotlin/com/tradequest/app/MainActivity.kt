@@ -53,7 +53,13 @@ class MainActivity : ComponentActivity() {
         val owner = LocalLifecycleOwner.current
         DisposableEffect(owner) {
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) vm.onResume()
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    // Re-base the minute ticker onto the next real boundary. A delay suspended
+                    // while backgrounded can otherwise resume and fire a late, off-minute tick,
+                    // leaving the countdown anchored to an arbitrary instant.
+                    liveClock.realign(owner.lifecycleScope)
+                    vm.onResume()
+                }
             }
             owner.lifecycle.addObserver(observer)
             onDispose { owner.lifecycle.removeObserver(observer) }
