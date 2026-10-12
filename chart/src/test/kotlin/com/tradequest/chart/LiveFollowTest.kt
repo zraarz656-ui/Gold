@@ -91,4 +91,39 @@ class LiveFollowTest {
         assertTrue(c.state.liveEdgeFollowing)
         assertEquals(0, c.pendingNewCandles)
     }
+
+    @Test
+    fun `switching timeframe while following keeps following the live edge`() {
+        val c = ChartController(emptyList(), emptyList(), Timeframe.M1)
+        c.onLayout(2.75f, 1000f)
+        c.replaceData(series(20_000), emptyList())
+        c.onLayout(2.75f, 900f)
+
+        // A timeframe pill tap re-aggregates the bars; it is not a scroll away.
+        c.setTimeframe(Timeframe.M15)
+        assertTrue(c.state.liveEdgeFollowing, "switching timeframe must not drop follow mode")
+
+        repeat(3) { step ->
+            c.appendM1(next(c), 0L)
+            assertTrue(c.state.liveEdgeFollowing, "still following after tick ${step + 1}")
+            assertEquals(0, c.pendingNewCandles, "no backlog after tick ${step + 1}")
+        }
+    }
+
+    @Test
+    fun `zooming while following keeps following the live edge`() {
+        val c = ChartController(series(2_000), emptyList(), Timeframe.M1)
+        c.onLayout(2.75f, 1000f)
+        assertTrue(c.state.liveEdgeFollowing)
+
+        c.zoomByFactor(2f)
+        assertTrue(c.state.liveEdgeFollowing, "a programmatic zoom must not drop follow mode")
+        assertTrue(c.pendingNewCandles == 0)
+
+        // A deliberate scroll away is still respected across a later zoom.
+        repeat(50) { c.pan(1000f) }
+        assertFalse(c.state.liveEdgeFollowing)
+        c.zoomByFactor(0.5f)
+        assertFalse(c.state.liveEdgeFollowing)
+    }
 }

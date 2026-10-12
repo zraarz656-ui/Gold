@@ -306,6 +306,26 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   *first*, so a resume realigns rather than emitting a late tick. A third requirement (cut off in
   the log) is still to be confirmed with the user.
 
+## Frozen current-price tag + follow-mode on timeframe/zoom (display-only build)
+- **Frozen tag ("price not moving").** The display path derived its `elapsedMs` from
+  `_histNow`, which is only refreshed on the minute tick. Within a minute it therefore held
+  the minute's *start* instant, so `displayPathPrice()` returned `valueAt(candle, 0)` — the
+  display path's first value, which is the open of the candle the walk is banded around.
+  That pinned the current-price tag (and the Buy/Sell labels, which read `displayQuote`) to a
+  single value for the whole minute. Fix: the display frame derives its own replayed clock
+  `displayHistNowNow() = now() - offsetMs` from the injected wall clock (guarded on
+  `_histNow > 0L`, NOT on a positive offset — offset 0 is legitimate), so the walk advances
+  continuously. The tag keeps reading `displayQuote.bid = displayPathPrice()` (the live quote,
+  mid-line convention: bid tag/Sell, ask = bid + real spread for Buy); the candle open is
+  never the tag source. Regression: `LivePriceTagTest` (fails without the fix).
+- **"Jump to latest N new" while following.** `setTimeframe` (via `centerOn`) and `zoom` both
+  ended by recomputing `liveEdgeFollowing = atLiveEdge()`. A timeframe switch re-aggregates
+  the bars and a programmatic zoom moves the scroll, so both were misread as a user scroll
+  away: `liveEdgeFollowing` flipped false and each next tick counted a backlog, showing the
+  badge. Fix: both freeze the follow intent first (`wasFollowing`) and re-anchor with
+  `jumpToLatest()` when the user had not gestured away; a deliberate `pan` away is still
+  respected. Regression: two `LiveFollowTest` cases (fail without the fix).
+
 ## Serving the APK (publish dir)
 - The work hosts serve `/workspace/serve` on ports 12000/12001. `python3 -m http.server`
   started with a plain `&` dies with its parent shell, so start it detached with `setsid`

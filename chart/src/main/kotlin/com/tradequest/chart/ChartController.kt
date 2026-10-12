@@ -108,6 +108,11 @@ class ChartController(
         val maxPx = density * ChartMath.MAX_CANDLE_WIDTH_DP
         val newWidth = (old * scale).coerceIn(minPx, maxPx)
         if (newWidth == old) return
+        // Freeze the follow intent before the viewport changes: if the user was following,
+        // a zoom must not be misread as a scroll away (a programmatic zoom leaves the
+        // scroll off the live edge, which atLiveEdge() would otherwise report as "not
+        // following"). A deliberate scroll away keeps whatever the new position gives.
+        val wasFollowing = state.liveEdgeFollowing
         val scroll = ChartMath.zoomAnchor(state.viewport.scrollIndex, pivotX, old, newWidth)
         val vp = state.viewport.copy(candleWidthPx = newWidth)
         val visible = ChartMath.visibleCandles(plotWidthPx, newWidth)
@@ -117,14 +122,18 @@ class ChartController(
         )
         state = state.copy(viewport = vp.copy(scrollIndex = clamped))
         barWidthDp = newWidth / density
-        state = state.copy(liveEdgeFollowing = atLiveEdge())
+        if (wasFollowing) jumpToLatest() else state = state.copy(liveEdgeFollowing = atLiveEdge())
     }
 
     fun setTimeframe(tf: Timeframe) {
         if (tf == state.timeframe) return
+        // A timeframe switch re-aggregates the bars, so the scroll has to move; it is not a
+        // user scroll. Keep following the live edge when the user had not gestured away.
+        val wasFollowing = state.liveEdgeFollowing
         val centerTime = centerTimeMs()
         state = state.copy(timeframe = tf, bars = cache.bars(tf))
         centerOn(centerTime)
+        if (wasFollowing) jumpToLatest()
     }
 
     /** Zoom the time axis about the centre of the plot, for the +/- toolbar buttons. */

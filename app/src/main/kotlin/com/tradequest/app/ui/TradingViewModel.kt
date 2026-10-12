@@ -286,6 +286,15 @@ class TradingViewModel @Inject constructor(
     @Volatile
     private var displayClosed: Candle? = null
 
+    /**
+     * The replayed clock as of the last display frame: `realNow - offsetMs`, derived from the
+     * injected wall clock on every frame so the smoothed price advances continuously within a
+     * minute. [_histNow] is only refreshed on the minute tick, so it would hold the minute's
+     * start instant and pin the display price to its first value (the frozen tag bug).
+     */
+    @Volatile
+    private var displayHistNow: Long = 0L
+
     private var displayJob: kotlinx.coroutines.Job? = null
 
     /**
@@ -443,11 +452,12 @@ class TradingViewModel @Inject constructor(
 
     /** Recompute the screen-only price from the last closed candle and the replayed clock. */
     private fun publishDisplayTick() {
-        // The countdown is cosmetic display state, so derive it from the live wall clock on
-        // every frame rather than snapshotting it at the last tick. That is what makes it
-        // count down smoothly and match the phone clock's next :00.
-        if (_histNow.value > 0L) {
-            if (isMarketClosed(_histNow.value)) {
+        // Mirror the wall clock onto the replayed clock every frame so the smoothed price
+        // advances within the minute; the countdown is derived the same way, from the live
+        // wall clock, so it counts down smoothly and matches the phone clock's next :00.
+        val histNow = displayHistNowNow()
+        if (histNow > 0L) {
+            if (isMarketClosed(histNow)) {
                 controller.setCountdown(null)
             } else {
                 val t = now()
@@ -470,13 +480,32 @@ class TradingViewModel @Inject constructor(
     }
 
     /**
+     * The replayed "now" for the display frame: `realNow - offsetMs`, computed from the
+     * injected wall clock. Unlike [_histNow] (refreshed only on the minute tick) this moves
+     * continuously, so the display path advances within the minute instead of freezing.
+     */
+    private fun displayHistNowNow(): Long {
+        // Guard on `_histNow` (published by startSeason) rather than on a positive offset:
+        // a dataset starting in the first week legitimately has offset 0, and `now() - offset`
+        // must still advance with the wall clock in that case.
+        if (_histNow.value > 0L) {
+            val hist = now() - offsetMs
+            if (hist > 0L) {
+                displayHistNow = hist
+                return hist
+            }
+        }
+        return _histNow.value
+    }
+
+    /**
      * The smoothed price for the current instant, or null when the market is shut or there is
      * no closed candle yet. It is a random walk around the last CLOSED candle's close; the
      * forming minute's high, low and close are never read.
      */
     private fun displayPathPrice(): Double? {
         val candle = displayClosed ?: return null
-        val now = _histNow.value
+        val now = if (displayHistNow > 0L) displayHistNow else _histNow.value
         if (now <= 0L || isMarketClosed(now)) return null
         // The walk spans the minute that FOLLOWS the last closed candle; that minute begins
         // one minute after the candle's timestamp.
@@ -945,11 +974,12 @@ class TradingViewModel @Inject constructor(
         // around that candle's close. It never reads the forming minute's high, low or close.
         val latestClosed = candles.latestClosed(_histNow.value)
         if (latestClosed?.ts != displayClosed?.ts) {
+            // A new minute began: re-point the walk at the candle that closed, then paint its
+            // first value now. Subsequent 4 Hz frames advance along that candle's path.
             displayClosed = latestClosed
-            // Snap the screen-only price to the new candle's real close, so a fresh minute
-            // starts on the true price before the next 4 Hz tick paints a walk.
-            displayPriceCache = latestClosed?.c
         }
+        displayHistNowNow()
+        displayPriceCache = displayPathPrice()
         // Re-point the screen-only quote/strip now that the authoritative state is fresh, so
         // the equity strip tracks the walk from the very first frame after load.
         syncDisplayQuote()
