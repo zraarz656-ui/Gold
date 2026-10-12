@@ -5,7 +5,8 @@ package com.tradequest.engine
  *
  * The historical clock is the real clock shifted back by a whole number of weeks so
  * that replayed time lands in the second week of the dataset. Shifting by exact weeks
- * keeps the weekday and the time of day identical between real and historical time.
+ * keeps the weekday, the time of day and the minute identical between real and
+ * historical time, so the replayed "now" reads as the present date.
  */
 object ClockEngine {
 

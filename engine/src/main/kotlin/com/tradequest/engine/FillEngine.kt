@@ -19,6 +19,11 @@ data class Order(
     val placedAtTs: Long,
     /** Trailing-stop distance in price units; null disables trailing. */
     val trailDistance: Double? = null,
+    /**
+     * True for a market order placed while the market was shut. It waits and fills at the
+     * first candle after the reopen instead of at placement.
+     */
+    val queued: Boolean = false,
 )
 
 /** An open position. All fields are immutable; changes produce a copy. */
@@ -62,7 +67,7 @@ data class Fill(
 )
 
 /** Why a position was closed. */
-enum class CloseReason { SL, TP, STOP_OUT }
+enum class CloseReason { SL, TP, STOP_OUT, MANUAL, PARTIAL }
 
 /** A realised close with its profit and loss. */
 data class ClosedPosition(
@@ -75,6 +80,10 @@ data class ClosedPosition(
     val commission: Double,
     val netPnl: Double,
     val reason: CloseReason,
+    /** Timestamp of the candle whose processing closed the position. */
+    val closeTs: Long,
+    /** The SL/TP level (or stop-out stop) that triggered the close; null for manual/half. */
+    val triggerPrice: Double? = null,
 )
 
 /** Risk events emitted while processing a candle. */
@@ -168,6 +177,28 @@ object FillEngine {
         if (state.dailyBlocked) state else state.copy(orders = state.orders + order)
 
     /**
+     * Fill a market order at once at [price] (the displayed ask for a long, bid for a
+     * short) and open a position stamped at [atTs]. This is the open-market path: the
+     * order never waits for the next candle. Pure, like [processCandle].
+     *
+     * @return the updated state, or [state] unchanged when the daily limit blocks orders.
+     */
+    fun fillMarketImmediately(state: AccountState, order: Order, price: Double, atTs: Long): AccountState {
+        if (state.dailyBlocked) return state
+        val position = Position(
+            id = state.nextPositionId,
+            side = order.side,
+            lots = order.lots,
+            entryPrice = roundPrice(price),
+            openedAtTs = atTs,
+            sl = order.sl,
+            tp = order.tp,
+            trailDistance = order.trailDistance,
+        )
+        return state.copy(positions = state.positions + position, nextPositionId = state.nextPositionId + 1)
+    }
+
+    /**
      * Process one 1-minute [candle] against [state].
      *
      * @param news news events used for spread widening and slippage.
@@ -205,8 +236,10 @@ object FillEngine {
                     id = nextPositionId++,
                     side = order.side,
                     lots = order.lots,
+                    // A fill can never be stamped earlier than its placement, even if the
+                    // candle being processed opens before the order was placed.
                     entryPrice = plan.price,
-                    openedAtTs = candle.ts,
+                    openedAtTs = maxOf(candle.ts, order.placedAtTs),
                     sl = order.sl,
                     tp = order.tp,
                     trailDistance = order.trailDistance,
@@ -226,7 +259,8 @@ object FillEngine {
             val tpFill = takeProfitFill(pos, candle, spread)
             val exit = slFill ?: tpFill ?: continue
             val reason = if (slFill != null) CloseReason.SL else CloseReason.TP
-            val result = realise(balance, pos, exit, reason)
+            val trigger = if (slFill != null) pos.sl else pos.tp
+            val result = realise(balance, pos, exit, reason, candle.ts, triggerPrice = trigger)
             balance = result.first
             closed.add(result.second)
             positions.remove(pos)
@@ -247,7 +281,7 @@ object FillEngine {
             val level = if (used <= 0.0) Double.MAX_VALUE else worstEquity(balance, positions, candle, spread) / used * 100.0
             if (level >= STOP_OUT_LEVEL) break
             val loser = positions.minByOrNull { floating(it, worstMark(it, candle, spread)) }!!
-            val result = realise(balance, loser, worstMark(loser, candle, spread), CloseReason.STOP_OUT)
+            val result = realise(balance, loser, worstMark(loser, candle, spread), CloseReason.STOP_OUT, candle.ts, triggerPrice = loser.sl)
             balance = result.first
             closed.add(result.second)
             positions.remove(loser)
@@ -296,9 +330,10 @@ object FillEngine {
 
     private fun pendingFill(order: Order, candle: Candle, spread: Double, news: List<NewsEvent>): FillPlan? =
         when (order.type) {
+            // A queued market order waits for the reopen; a normal one fills at this candle's open.
             OrderType.MARKET -> {
                 val price = if (order.side == Side.LONG) candle.o + spread else candle.o
-                FillPlan(roundPrice(price), "MARKET")
+                FillPlan(roundPrice(price), if (order.queued) "QUEUED" else "MARKET")
             }
 
             OrderType.BUY_LIMIT -> {
@@ -414,7 +449,14 @@ object FillEngine {
         positions.sumOf { worstMark(it, candle, spread) * it.lots }
 
     /** Realise [pos] at [exitPrice]: return the new balance and the close record. */
-    private fun realise(balance: Double, pos: Position, exitPrice: Double, reason: CloseReason): Pair<Double, ClosedPosition> {
+    private fun realise(
+        balance: Double,
+        pos: Position,
+        exitPrice: Double,
+        reason: CloseReason,
+        closeTs: Long,
+        triggerPrice: Double? = null,
+    ): Pair<Double, ClosedPosition> {
         val gross =
             if (pos.side == Side.LONG) (exitPrice - pos.entryPrice) * LOT_OZ * pos.lots
             else (pos.entryPrice - exitPrice) * LOT_OZ * pos.lots
@@ -429,8 +471,44 @@ object FillEngine {
             commission = commission,
             netPnl = gross - commission,
             reason = reason,
+            closeTs = closeTs,
+            triggerPrice = triggerPrice,
         )
     }
+
+    /**
+     * Close an open position at [exitPrice] (the current bid), returning the new state and
+     * the realised trade. Used for manual and partial closes; the candle loop does not
+     * call this. Partial closes keep the original position id on the remainder.
+     *
+     * [closeTs] is the timestamp of the last visible candle (the "now" of the live market)
+     * and becomes [ClosedPosition.closeTs].
+     */
+    fun closePosition(
+        state: AccountState,
+        positionId: Long,
+        exitPrice: Double,
+        closeTs: Long,
+        lots: Double = Double.MAX_VALUE,
+    ): Pair<AccountState, ClosedPosition>? {
+        val pos = state.positions.firstOrNull { it.id == positionId } ?: return null
+        val closingLots = min(lots, pos.lots)
+        if (closingLots <= 0.0) return null
+        val remainder = pos.lots - closingLots
+        val reason = if (remainder <= 1e-9) CloseReason.MANUAL else CloseReason.PARTIAL
+        val realised = realise(state.balance, pos.copy(lots = closingLots), roundPrice(exitPrice), reason, closeTs)
+        val positions = if (remainder <= 1e-9) {
+            state.positions.filterNot { it.id == positionId }
+        } else {
+            state.positions.map { if (it.id == positionId) pos.copy(lots = roundLots(remainder)) else it }
+        }
+        return state.copy(balance = realised.first, positions = positions) to realised.second
+    }
+
+    /** Cancel a pending order. Returns the new state, or null when [orderId] is unknown. */
+    fun cancelOrder(state: AccountState, orderId: Long): AccountState? =
+        if (state.orders.none { it.id == orderId }) null
+        else state.copy(orders = state.orders.filterNot { it.id == orderId })
 
     /** True if [ts] is within [windowMs] (inclusive) of a HIGH-impact event. */
     private fun withinHighNews(ts: Long, news: List<NewsEvent>, windowMs: Long): Boolean =

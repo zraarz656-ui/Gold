@@ -1,0 +1,587 @@
+package com.tradequest.chart
+
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.tradequest.engine.Candle
+import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.min
+
+const val PRICE_LABEL_MIN_GAP_DP = 20.0f
+const val TIME_LABEL_MIN_GAP_DP = 64.0f
+
+/** Order tags must stay readable on their fill in all four themes. */
+private const val ORDER_TAG_MIN_CONTRAST = 4.5
+
+/** The current-price tag is slim and semibold, per the visual spec. */
+private const val CURRENT_PRICE_TAG_SP = 12f
+
+/** The candle-close countdown under the tag. */
+private const val COUNTDOWN_SP = 9f
+
+/** The current-price line is a 1dp dotted line at this opacity. */
+private const val CURRENT_PRICE_LINE_OPACITY = 0.6f
+
+/** Plot rectangle + resolved price range + visible bar window for one frame. */
+fun geometryFor(state: ChartState, sizePx: Size, axisWidthPx: Float, bottomAxisPx: Float): ChartGeometry {
+    val plot = ChartMath.plotRect(sizePx.width, sizePx.height, axisWidthPx, bottomAxisPx)
+    val visible = ChartMath.visibleRange(state.viewport, plot.right, state.barCount, 2)
+    return ChartGeometry(
+        plot.left, plot.top, plot.right, plot.bottom,
+        resolvePriceRange(state, visible), visible, sizePx.width,
+    )
+}
+
+/** Auto-fit the visible bars, or honour the manual range when the user has pinned one. */
+fun resolvePriceRange(state: ChartState, visible: IntRange): PriceRange {
+    val vp = state.viewport
+    if (vp.manualPriceScale) {
+        return ChartMath.clampManualRange(
+            vp.manualPriceMin ?: 0.0,
+            vp.manualPriceMax ?: 1.0,
+            ChartMath.fullExtent(state.bars),
+        )
+    }
+    val e = ChartMath.dataExtent(state.bars, visible) ?: return PriceRange(0.0, 1.0)
+    return ChartMath.autoFitRange(e.min, e.max)
+}
+
+fun DrawScope.drawChart(
+    state: ChartState,
+    geo: ChartGeometry,
+    textMeasurer: TextMeasurer,
+    paths: CandlePaths,
+    crosshair: CrosshairInfo?,
+    density: Float = 1f,
+    measure: TagTextMeasure = TagTextMeasure.Approximate,
+) {
+    val theme = state.theme
+    val priceTicks = ChartMath.niceTicks(geo.priceRange.min, geo.priceRange.max, 6)
+    val plot = geo.plot
+
+    // Everything that belongs to the plot is clipped to it, so no layer can bleed over the
+    // price gutter, the time axis or its neighbours.
+    clipRect(plot.left, plot.top, plot.right, plot.bottom) {
+        for (p in priceTicks) {
+            val y = ChartMath.priceToY(p, geo.priceRange, plot)
+            drawLine(theme.grid, Offset(plot.left, y), Offset(plot.right, y), 1f)
+        }
+        drawLine(theme.grid, Offset(plot.right, plot.top), Offset(plot.right, plot.bottom), 1f)
+
+        drawMarketBands(state, geo)
+        drawCandles(state, geo, paths)
+        drawIndicatorHook(state, geo)
+        drawDrawingsHook(state, geo)
+        drawOrderLinesHook(state, geo, textMeasurer)
+
+        if (state.bars.lastOrNull() != null) drawCurrentPriceLine(state, geo)
+        if (crosshair != null) drawCrosshair(state, geo, crosshair)
+    }
+
+    val last = state.bars.lastOrNull()
+    val scale = state.labelScale
+    // The smoothed display price if set, else the last close. Visual only: the candle data
+    // (and every fill) still uses the completed close.
+    val displayPrice = state.displayPrice ?: last?.c
+    val currentY = displayPrice?.let { ChartMath.priceToY(it, geo.priceRange, plot) }
+    val crosshairY = crosshair?.let { it.y.coerceIn(plot.top, plot.bottom) }
+    val lastUp = last != null && last.c >= last.o
+    val currentColor = TagStyle.currentPriceFill(theme, lastUp)
+    val minGapPx = density * PRICE_LABEL_MIN_GAP_DP
+    val priceTagH = LevelGeometry.priceTagHeight(density, scale)
+
+    // The far-right tags (current price, crosshair) anchor to the screen edge and are drawn
+    // last. Grid labels stay clear of them and of each other.
+    val pinnedY = listOfNotNull(currentY, crosshairY).map { it.coerceIn(plot.top, plot.bottom) }
+    val blockGap = maxOf(minGapPx, priceTagH)
+
+    // Nothing in the far-right gutter may cover the pinned price tags; the order tags are
+    // drawn first, over the candles, but they never reach into that gutter.
+    drawOrderOverlays(state, geo, textMeasurer, measure)
+
+    // Grid price labels live in the right gutter; clipped there so they never cover the plot.
+    clipRect(plot.right, 0f, size.width, size.height) {
+        for (p in priceTicks) {
+            val y = ChartMath.priceToY(p, geo.priceRange, plot)
+            if (ChartMath.collidesWithAny(y, pinnedY, blockGap)) continue
+            drawGridLabel(textMeasurer, theme, formatPrice(p), plot.right + 4f, y, scale)
+        }
+    }
+
+    // The crosshair tag (finger) is drawn first; the current-price tag is drawn last so it
+    // is never hidden, even when the crosshair sits on the same price, and always over every
+    // order tag. The tag fills the measured gutter and carries a notch at the price line.
+    if (crosshairY != null) {
+        val inverted = TagStyle.invertedTag(theme)
+        val price = ChartMath.yToPrice(crosshairY, geo.priceRange, plot)
+        val rect = TagGeom.priceTag(size.width, plot, crosshairY, density, scale, measure.width(formatPrice(price), CURRENT_PRICE_TAG_SP * scale))
+        drawPriceLabel(
+            textMeasurer, rect, inverted.fill,
+            price, scale, theme, textColor = inverted.text,
+        )
+    }
+    if (last != null && currentY != null && displayPrice != null) {
+        val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale, measure.width(formatPrice(displayPrice), CURRENT_PRICE_TAG_SP * scale))
+        drawCurrentPriceTag(state, geo, textMeasurer, rect, currentColor, displayPrice, currentY, lastUp, scale)
+
+        // The candle-close countdown sits just under the tag, in muted text.
+        val countdown = state.countdownMs
+        if (state.showCountdown && countdown != null && countdown >= 0) {
+            val text = formatCountdown(countdown)
+            val muted = if (theme.isLight) Color(0xFF5A6472) else Color(0xFF8A94A6)
+            val measured = textMeasurer.measure(text, TextStyle(muted, (COUNTDOWN_SP * scale).sp, FontWeight.Medium))
+            val cx = rect.centerX - measured.size.width / 2f
+            val cy = rect.bottom + 2f * density
+            drawText(measured, topLeft = Offset(cx, cy))
+        }
+    }
+
+    // The magnified price bubble follows the finger, so it is drawn last and unclipped.
+    state.dragPreview?.let { drawDragPreview(state, geo, textMeasurer, it) }
+}
+
+/**
+ * The order tags (entry/SL/TP/pending) and their "+SL"/"+TP" handles. Each tag shrinks to
+ * its text and is right-aligned against the plot's right edge, drawn at
+ * [LevelGeometry.ORDER_TAG_OPACITY] so the candles stay visible through it. Entries that
+ * sit within 20dp of each other collapse into one grouped "N pos" tag (see [EntryGroups]).
+ */
+private fun DrawScope.drawOrderOverlays(
+    state: ChartState,
+    geo: ChartGeometry,
+    textMeasurer: TextMeasurer,
+    measure: TagTextMeasure,
+) {
+    val plot = geo.plot
+    val scale = state.labelScale
+    val density = state.density
+    val theme = state.theme
+
+    // One frame shared with the hit test: every SL/TP/pending/entry tag (never dropped,
+    // stacked at least 20dp apart) and, for the selected position only, its "+SL"/"+TP"
+    // handles pushed left of the tag column.
+    val frame = orderTagFrameFor(state, geo, measure, state.selectedEntryId)
+    val textSize = (LevelGeometry.ORDER_TAG_SP * scale).sp
+    val closeW = LevelGeometry.closeBox(density, scale)
+
+    frame.order.forEachIndexed { i, ft ->
+        val rect = frame.tags[i].rect
+
+        // A displaced tag gets a thin leader back to its line, so a stacked tag is still
+        // unambiguous about which level it names.
+        if (frame.tags[i].leader) {
+            val lineY = frame.tags[i].lineY.coerceIn(0f, size.height)
+            val edge = if (lineY < rect.top) rect.top else rect.bottom
+            val color = TagStyle.outline(theme)
+            drawLine(color, Offset(rect.left + 6f * density, edge), Offset(rect.left + 6f * density, lineY), 1f)
+            drawLine(color, Offset(rect.left + 6f * density, lineY), Offset(plot.right, lineY), 1f)
+        }
+
+        val base = ft.fillKind?.let { TagStyle.orderColor(it) }
+            ?: if (ft.positive) theme.up else theme.down
+        val fill = TagStyle.ensureContrast(base, ORDER_TAG_MIN_CONTRAST)
+            .copy(alpha = LevelGeometry.ORDER_TAG_OPACITY)
+        drawTagBox(rect, fill, theme, density)
+
+        if (ft.closeBox) {
+            val closeLeft = rect.right - closeW
+            drawRect(Color(0x66000000), Offset(closeLeft, rect.top), Size(closeW, rect.height))
+            drawLine(Color.White, Offset(closeLeft + closeW * 0.3f, rect.centerY - 4f * scale), Offset(closeLeft + closeW * 0.7f, rect.centerY + 4f * scale), 1.5f)
+            drawLine(Color.White, Offset(closeLeft + closeW * 0.7f, rect.centerY - 4f * scale), Offset(closeLeft + closeW * 0.3f, rect.centerY + 4f * scale), 1.5f)
+        }
+
+        val measured = textMeasurer.measure(ft.text, TextStyle(TagStyle.textOn(fill), textSize, FontWeight.Bold))
+        // Centre the text in the tag's text area (the close box, when present, is excluded).
+        val textArea = rect.width - if (ft.closeBox) closeW else 0f
+        val tx = rect.left + (textArea - measured.size.width) / 2f
+        drawText(measured, topLeft = Offset(maxOf(tx, rect.left + 2f * density), rect.centerY - measured.size.height / 2f))
+    }
+
+    // "+SL"/"+TP" handles: left of the tag column, following the selected position.
+    val hh = LevelGeometry.handleHeight(density, scale)
+    frame.handles.forEachIndexed { i, rect ->
+        val kind = frame.handleTargets[i].kind
+        val label = if (kind == OrderLineKind.SL) "+SL" else "+TP"
+        val color = TagStyle.orderColor(kind)
+        val selY = ChartMath.priceToY(
+            state.orderLines.first { it.id == frame.handleTargets[i].id && it.kind == OrderLineKind.ENTRY }.drawPrice,
+            geo.priceRange, plot,
+        )
+        val selectedBox = TagRect(rect.left, selY - hh / 2f, rect.right, selY + hh / 2f)
+        // A connector from the handle to the selected entry, so the pairing is obvious.
+        drawLine(color.copy(alpha = 0.5f), Offset(rect.left, rect.centerY), Offset(plot.right, selectedBox.centerY), 1f)
+        drawTagBox(rect, Color(0xE61A1F27), theme, density)
+        drawRect(color, Offset(rect.left, rect.top), Size(3f, rect.height))
+        drawText(
+            textMeasurer, label,
+            Offset(rect.left + 7f * scale, rect.centerY - 6f * scale),
+            TextStyle(color, (11f * scale).sp, FontWeight.Bold),
+        )
+    }
+
+}
+
+/** The text on a merged entry tag: "3 pos  -5.10", matching the entry tag's P&L format. */
+internal fun groupTagText(g: EntryGroup): String {
+    val pnl = g.pnl ?: return "${g.count} pos"
+    val sign = if (pnl >= 0) "+" else "-"
+    return "${g.count} pos  $sign%.2f".format(java.util.Locale.US, kotlin.math.abs(pnl))
+}
+
+/**
+ * The merged entry groups for a frame, shared by the renderer and the hit test so a tap on
+ * a "N pos" tag lands exactly where the tag is drawn. Pure given the geometry.
+ */
+fun entryGroupsFor(state: ChartState, geo: ChartGeometry): List<EntryGroup> {
+    val points = state.orderLines
+        .filter { it.kind == OrderLineKind.ENTRY }
+        .map { line ->
+            EntryPoint(
+                ids = listOf(line.id),
+                y = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot),
+                pnl = line.pnlText?.toDoubleOrNull(),
+                positive = line.positive,
+            )
+        }
+    return EntryGroups.cluster(points, EntryGroups.MIN_GAP_DP * state.density)
+}
+
+/** A filled pill with rounded corners and a theme-aware hairline outline. */
+private fun DrawScope.drawTagBox(rect: TagRect, fill: Color, theme: ChartTheme, density: Float) {
+    val radius = LevelGeometry.TAG_RADIUS_DP * density
+    val size = Size(rect.width, rect.height)
+    val topLeft = Offset(rect.left, rect.top)
+    drawRoundRect(fill, topLeft = topLeft, size = size, cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(
+        TagStyle.outline(theme), topLeft = topLeft, size = size,
+        cornerRadius = CornerRadius(radius, radius), style = Stroke(width = 1f),
+    )
+}
+
+/** The magnified price bubble shown above the finger while a level is dragged. */
+private fun DrawScope.drawDragPreview(
+    state: ChartState,
+    geo: ChartGeometry,
+    textMeasurer: TextMeasurer,
+    preview: DragPreview,
+) {
+    val text = formatPrice(preview.price)
+    val w = 74f
+    val h = 24f
+    val fx = if (preview.x.isNaN()) 0f else preview.x
+    val fy = if (preview.y.isNaN()) 0f else preview.y
+    val x = (fx - w / 2f).coerceIn(0f, maxOf(size.width - w, 0f))
+    val y = (fy - h - 16f).coerceIn(0f, maxOf(size.height - h, 0f))
+    drawRect(Color(0xE61A1F27), Offset(x, y), Size(w, h))
+    drawRect(state.theme.crosshair, Offset(x, y), Size(w, h), style = Stroke(1.5f))
+    drawText(textMeasurer, text, Offset(x + 7f, y + 5f), TextStyle(Color.White, 13.sp))
+}
+
+/** Shade the weekend gaps (a candle gap wider than two bars means the market was shut). */
+private fun DrawScope.drawMarketBands(state: ChartState, geo: ChartGeometry) {
+    val theme = state.theme
+    val vp = state.viewport
+    val span = ChartController.spanMs(state.timeframe)
+    val bars = state.bars
+    if (geo.visible.isEmpty()) return
+    for (i in maxOf(1, geo.visible.first)..geo.visible.last) {
+        if (i - 1 < 0) continue
+        val gap = bars[i].ts - bars[i - 1].ts
+        if (gap > 2 * span) {
+            val center = ChartMath.indexToX(i - 0.5f, vp)
+            val w = maxOf(vp.candleWidthPx * 0.35f, 6f)
+            val left = center - w / 2f
+            if (left < geo.plot.right && left + w > geo.plot.left) {
+                drawRect(theme.marketClosed, Offset(left, geo.plot.top), Size(w, geo.plot.height))
+                drawLine(theme.grid, Offset(center, geo.plot.top), Offset(center, geo.plot.bottom), 1f)
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawCandles(state: ChartState, geo: ChartGeometry, paths: CandlePaths) {
+    val theme = state.theme
+    val vp = state.viewport
+    paths.rewind()
+    val halfW = maxOf(0.5f, vp.candleWidthPx / 2f - 0.5f)
+    for (i in geo.visible.first..geo.visible.last) {
+        val c = state.bars[i]
+        val x = ChartMath.indexToX(i.toFloat(), vp)
+        if (x < geo.plot.left - vp.candleWidthPx || x > geo.plot.right + vp.candleWidthPx) continue
+        val up = c.c >= c.o
+        val yH = ChartMath.priceToY(c.h, geo.priceRange, geo.plot)
+        val yL = ChartMath.priceToY(c.l, geo.priceRange, geo.plot)
+        val yO = ChartMath.priceToY(c.o, geo.priceRange, geo.plot)
+        val yC = ChartMath.priceToY(c.c, geo.priceRange, geo.plot)
+        val wick = if (up) paths.upWick else paths.downWick
+        wick.moveTo(x, yH)
+        wick.lineTo(x, yL)
+        val bodyTop = min(yO, yC)
+        val bodyH = maxOf(1f, maxOf(yO, yC) - bodyTop)
+        val body = if (up) paths.upBody else paths.downBody
+        body.addRect(Rect(x - halfW, bodyTop, x + halfW, bodyTop + bodyH))
+    }
+    drawPath(paths.upWick, theme.upWick, style = Stroke(1f))
+    drawPath(paths.downWick, theme.downWick, style = Stroke(1f))
+    drawPath(paths.upBody, theme.up)
+    drawPath(paths.downBody, theme.down)
+}
+
+// Extension points for Phase 3 overlays (indicators, drawings, order lines).
+private fun DrawScope.drawIndicatorHook(state: ChartState, geo: ChartGeometry) {}
+private fun DrawScope.drawDrawingsHook(state: ChartState, geo: ChartGeometry) {}
+
+/** Draw the order/SL/TP lines and entry/exit markers supplied by the trading layer. */
+private fun DrawScope.drawOrderLinesHook(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
+    if (state.orderLines.isEmpty() && state.markers.isEmpty() && state.dragPreview == null) return
+    val preview = state.dragPreview
+    for (line in state.orderLines) {
+        if (preview != null && preview.line.id == line.id && preview.line.kind == line.kind) continue
+        val y = ChartMath.priceToY(line.drawPrice, geo.priceRange, geo.plot)
+        if (y < geo.plot.top - 12f || y > geo.plot.bottom + 12f) continue
+        val color = line.color()
+        if (line.kind == OrderLineKind.ENTRY) {
+            drawLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), 1.5f)
+        } else {
+            drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y))
+        }
+    }
+    preview?.let {
+        val y = ChartMath.priceToY(it.price, geo.priceRange, geo.plot)
+        drawDashedLine(it.line.color(), Offset(geo.plot.left, y), Offset(geo.plot.right, y))
+    }
+    if (preview == null) {
+        for (m in state.markers) {
+            val x = ChartMath.indexToX(m.barIndex.toFloat(), state.viewport)
+            if (x < geo.plot.left - 8f || x > geo.plot.right + 8f) continue
+            val y = ChartMath.priceToY(m.price, geo.priceRange, geo.plot)
+            drawMarker(x, y, m.entry, m.long)
+        }
+    }
+}
+
+/** Tag text for a line, rebuilt from the drawn price so it updates while dragging. */
+internal fun ChartOrderLine.tagText(price: Double = drawPrice): String {
+    val ctx = levelContext()
+    return when (kind) {
+        OrderLineKind.SL, OrderLineKind.TP -> LevelRules.levelTag(kind, ctx, price)
+        OrderLineKind.PENDING -> label
+        OrderLineKind.ENTRY -> pnlText?.let { "$label $it" } ?: label
+    }
+}
+
+internal fun ChartOrderLine.needsCloseBox(): Boolean =
+    draggable && (kind == OrderLineKind.SL || kind == OrderLineKind.TP)
+
+private fun ChartOrderLine.color(): Color = TagStyle.orderColor(kind)
+
+/** A small triangle at an entry/exit point. */
+private fun DrawScope.drawMarker(x: Float, y: Float, entry: Boolean, long: Boolean) {
+    val size = 7f
+    val path = Path()
+    if (entry) {
+        if (long) {
+            path.moveTo(x, y - size)
+            path.lineTo(x - size, y - size * 2.2f)
+            path.lineTo(x + size, y - size * 2.2f)
+        } else {
+            path.moveTo(x, y + size)
+            path.lineTo(x - size, y + size * 2.2f)
+            path.lineTo(x + size, y + size * 2.2f)
+        }
+    } else {
+        if (long) {
+            path.moveTo(x, y + size)
+            path.lineTo(x - size, y + size * 2.2f)
+            path.lineTo(x + size, y + size * 2.2f)
+        } else {
+            path.moveTo(x, y - size)
+            path.lineTo(x - size, y - size * 2.2f)
+            path.lineTo(x + size, y - size * 2.2f)
+        }
+    }
+    path.close()
+    drawPath(path, if (long) Color(0xFF26A69A) else Color(0xFFEF5350))
+}
+
+/** The current-price line: a 1dp dotted line at 60% opacity, in the up/down colour. */
+private fun DrawScope.drawCurrentPriceLine(state: ChartState, geo: ChartGeometry) {
+    val last = state.bars.lastOrNull() ?: return
+    val price = state.displayPrice ?: last.c
+    val y = ChartMath.priceToY(price, geo.priceRange, geo.plot)
+    val color = TagStyle.currentPriceFill(state.theme, last.c >= last.o)
+        .copy(alpha = CURRENT_PRICE_LINE_OPACITY)
+    drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), width = 1f, dash = 4f, gap = 3f)
+}
+
+/**
+ * The slim current-price tag: a 22dp, 4dp-radius, 12sp semibold label filling the gutter,
+ * with a small notch on its left edge pointing at the price line, and a small dot at the
+ * last candle's close. Drawn last so nothing covers it.
+ */
+private fun DrawScope.drawCurrentPriceTag(
+    state: ChartState,
+    geo: ChartGeometry,
+    textMeasurer: TextMeasurer,
+    rect: TagRect,
+    color: Color,
+    price: Double,
+    lineY: Float,
+    up: Boolean,
+    scale: Float,
+) {
+    val theme = state.theme
+    drawTagBox(rect, color, theme, density)
+
+    // The notch on the left edge, pointing at the price line.
+    val notch = LevelGeometry.priceTagNotch(density, scale)
+    val ny = lineY.coerceIn(rect.top + 2f, rect.bottom - 2f)
+    val path = Path().apply {
+        moveTo(rect.left, ny - notch)
+        lineTo(rect.left - notch, ny)
+        lineTo(rect.left, ny + notch)
+        close()
+    }
+    drawPath(path, color)
+
+    // The text, semibold, centred in the tag.
+    val textColor = TagStyle.textOn(color)
+    val measured = textMeasurer.measure(
+        formatPrice(price),
+        TextStyle(textColor, (CURRENT_PRICE_TAG_SP * scale).sp, FontWeight.SemiBold),
+    )
+    val tx = rect.left + (rect.width - measured.size.width) / 2f
+    val ty = rect.centerY - measured.size.height / 2f
+    drawText(measured, topLeft = Offset(tx, ty))
+
+    // A small dot at the last candle's close, in the up/down colour.
+    val last = state.bars.lastOrNull() ?: return
+    val x = ChartMath.indexToX(lastIndex(state).toFloat(), state.viewport)
+        .coerceIn(geo.plot.left, geo.plot.right)
+    val dotColor = TagStyle.candleColor(theme, up = last.c >= last.o)
+    drawCircle(dotColor, radius = 3f * density, center = Offset(x, lineY))
+}
+
+private fun lastIndex(state: ChartState): Int = maxOf(0, state.bars.size - 1)
+
+private fun DrawScope.drawCrosshair(
+    state: ChartState,
+    geo: ChartGeometry,
+    crosshair: CrosshairInfo,
+) {
+    val theme = state.theme
+    val cx = crosshair.x.coerceIn(geo.plot.left, geo.plot.right)
+    val cy = crosshair.y.coerceIn(geo.plot.top, geo.plot.bottom)
+    drawDashedLine(theme.crosshair, Offset(cx, geo.plot.top), Offset(cx, geo.plot.bottom))
+    drawDashedLine(theme.crosshair, Offset(geo.plot.left, cy), Offset(geo.plot.right, cy))
+}
+
+private fun DrawScope.drawDashedLine(
+    color: Color,
+    a: Offset,
+    b: Offset,
+    width: Float = 1f,
+    dash: Float = 6f,
+    gap: Float = 5f,
+) {
+    val dx = b.x - a.x
+    val dy = b.y - a.y
+    val len = hypot(dx, dy)
+    if (len <= 0f) return
+    val ux = dx / len
+    val uy = dy / len
+    var t = 0f
+    while (t < len) {
+        val end = min(t + dash, len)
+        drawLine(color, Offset(a.x + ux * t, a.y + uy * t), Offset(a.x + ux * end, a.y + uy * end), width)
+        t += dash + gap
+    }
+}
+
+private fun DrawScope.drawAxisLabel(textMeasurer: TextMeasurer, theme: ChartTheme, text: String, x: Float, y: Float) {
+    drawText(textMeasurer, text, Offset(x, y), TextStyle(theme.axisText, 10.sp))
+}
+
+private fun DrawScope.drawGridLabel(
+    textMeasurer: TextMeasurer,
+    theme: ChartTheme,
+    text: String,
+    x: Float,
+    centerY: Float,
+    scale: Float,
+) {
+    // Brighter than the old axis text, 12sp medium; still subtle relative to the tags.
+    val color = TagStyle.brighten(theme.axisText, theme, 0.35f).copy(alpha = 0.85f)
+    val size = (12f * scale).sp
+    drawText(textMeasurer, text, Offset(x, centerY - 6f * scale), TextStyle(color, size, FontWeight.Medium))
+}
+
+/**
+ * A price tag drawn in the far-right gutter. [color] is the fill; text is black or white
+ * for the best contrast on it. Rounded, outlined, horizontally text-centered in the tag.
+ */
+private fun DrawScope.drawPriceLabel(
+    textMeasurer: TextMeasurer,
+    rect: TagRect,
+    color: Color,
+    price: Double,
+    scale: Float,
+    theme: ChartTheme,
+    textColor: Color = TagStyle.textOn(color),
+    textSizeSp: Float = 12f,
+) {
+    drawTagBox(rect, color, theme, density)
+    val measured = textMeasurer.measure(
+        formatPrice(price),
+        TextStyle(textColor, (textSizeSp * scale).sp, FontWeight.Bold),
+    )
+    val tx = rect.left + (rect.width - measured.size.width) / 2f
+    val ty = rect.centerY - measured.size.height / 2f
+    drawText(measured, topLeft = Offset(tx, ty))
+}
+
+fun formatPrice(p: Double): String = String.format(java.util.Locale.US, "%.2f", p)
+
+fun DrawScope.drawTimeAxis(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer, density: Float = 1f) {
+    val theme = state.theme
+    val vp = state.viewport
+    val bars = state.bars
+    if (bars.isEmpty()) return
+    val axisTop = geo.plot.bottom
+    clipRect(geo.plot.left, axisTop, geo.plot.right, size.height) {
+        drawLine(theme.grid, Offset(geo.plot.left, axisTop), Offset(geo.plot.right, axisTop), 1f)
+        val displayTs = bars.map { it.ts + state.displayOffsetMs }
+        val minSpacingPx = density * TIME_LABEL_MIN_GAP_DP
+        val ticks = ChartMath.timeAxisTicks(
+            displayTs, geo.visible, state.timeframe, vp.scrollIndex, vp.candleWidthPx, minSpacingPx,
+        )
+        for (t in ticks) {
+            val x = ChartMath.indexToX(t.index.toFloat(), vp)
+            if (x < geo.plot.left - 6f || x > geo.plot.right) continue
+            // Draw the ticks the label marks: a short vertical line at the tick, then the text.
+            drawLine(theme.grid, Offset(x, axisTop), Offset(x, axisTop + 4f), 1f)
+            drawAxisLabel(textMeasurer, theme, formatTimeLabel(t.displayTs, state.timeframe), x + 3f, axisTop + 4f)
+        }
+    }
+}
+
+/** Centre banner shown while the replayed market is shut. */
+fun DrawScope.drawMarketClosedBanner(state: ChartState, geo: ChartGeometry, textMeasurer: TextMeasurer) {
+    val text = "Market closed"
+    val cx = (geo.plot.left + geo.plot.right) / 2f
+    val cy = (geo.plot.top + geo.plot.bottom) / 2f
+    drawRect(Color(0xCC1A1F27), Offset(cx - 92f, cy - 20f), Size(184f, 40f))
+    drawText(textMeasurer, text, Offset(cx - 78f, cy - 10f), TextStyle(Color(0xFFFFB300), 16.sp))
+}

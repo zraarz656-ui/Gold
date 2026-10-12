@@ -1,0 +1,10 @@
+{
+  "source": "HistData.com via --from-csv",
+  "tool": "tools/prep-data.js",
+  "version": "prep-data.js 0.1.0 (--from-csv)",
+  "fetchedAt": "2026-10-10T05:14:46.410Z",
+  "from": "2026-07-01T05:00:00.000Z",
+  "to": "2026-10-01T04:59:00.000Z",
+  "rowCount": 89424,
+  "sha256": "76daf32e2845fad07783559965a1fc478f987de9da6aed3e514ed735420b26bc"
+}

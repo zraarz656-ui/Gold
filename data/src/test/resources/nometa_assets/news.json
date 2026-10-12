@@ -1,0 +1,19 @@
+{
+  "events": [
+    {
+      "ts": 1699882200000,
+      "title": "US CPI",
+      "impact": "HIGH"
+    },
+    {
+      "ts": 1699968600000,
+      "title": "Initial Jobless Claims",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1700074800000,
+      "title": "FOMC",
+      "impact": "HIGH"
+    }
+  ]
+}

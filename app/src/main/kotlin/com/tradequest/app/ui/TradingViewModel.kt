@@ -1,0 +1,946 @@
+package com.tradequest.app.ui
+
+import android.util.Log
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.tradequest.chart.ChartController
+import com.tradequest.chart.ChartMarker
+import com.tradequest.chart.ChartOrderLine
+import com.tradequest.chart.ChartOverlayState
+import com.tradequest.chart.LevelOutcome
+import com.tradequest.chart.LiveDisplayPath
+import com.tradequest.chart.OrderLineKind
+import com.tradequest.chart.PriceLabelSize
+import com.tradequest.data.AccountCheckpoint
+import com.tradequest.data.AssetSource
+import com.tradequest.data.CandleRepository
+import com.tradequest.data.CatchUpProcessor
+import com.tradequest.data.DailyStats
+import com.tradequest.data.DailyStatsDao
+import com.tradequest.data.DatabaseIntrospector
+import com.tradequest.data.DatasetImporter
+import com.tradequest.data.DatasetMeta
+import com.tradequest.data.DatasetSource
+import com.tradequest.data.EngineMapper.toEngine
+import com.tradequest.data.EquitySnapshotDao
+import com.tradequest.data.EquitySnapshotEntity
+import com.tradequest.data.ImportProgress
+import com.tradequest.data.ImportResult
+import com.tradequest.data.OrderRequest
+import com.tradequest.data.OrderRules
+import com.tradequest.data.OrderStatus
+import com.tradequest.data.PreferencesStore
+import com.tradequest.data.RiskCalculator
+import com.tradequest.data.Season
+import com.tradequest.data.SeasonRepository
+import com.tradequest.data.SettingsRepository
+import com.tradequest.data.TradeOrder
+import com.tradequest.data.TradeQuestDatabase
+import com.tradequest.data.TradingRepository
+import com.tradequest.app.ui.theme.themeForId
+import com.tradequest.engine.AccountState
+import com.tradequest.engine.Candle
+import com.tradequest.engine.ClosedPosition
+import com.tradequest.engine.ClockEngine
+import com.tradequest.engine.FillEngine
+import com.tradequest.engine.MarketCalendar
+import com.tradequest.engine.MarketTime
+import com.tradequest.engine.NewsEvent
+import com.tradequest.engine.OrderType
+import com.tradequest.engine.Side
+import com.tradequest.engine.Timeframe
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+
+/** High-level startup phase, so the UI can show import/catch-up progress. */
+enum class StartupPhase { IMPORTING, CATCHING_UP, READY, ERROR }
+
+data class StartupState(
+    val phase: StartupPhase = StartupPhase.IMPORTING,
+    val importFraction: Float = 0f,
+    val catchUpFrom: Long = 0L,
+    val catchUpTo: Long = 0L,
+    val error: String? = null,
+)
+
+data class Quote(val bid: Double, val ask: Double, val spread: Double)
+
+/** While the market is shut: how long until the next open, and that open's display time. */
+data class ClosedNotice(val opensInMs: Long, val opensAtDisplayMs: Long)
+
+/**
+ * Snapshot for the "Data (debug)" panel. Times are UTC epoch ms; the UI applies the
+ * display offset and renders in the device zone.
+ */
+data class DataStats(
+    val rowCount: Long = 0L,
+    val firstTs: Long = 0L,
+    val lastTs: Long = 0L,
+    val closeFirst: Double = 0.0,
+    val closeLast: Double = 0.0,
+    val closeMin: Double = 0.0,
+    val closeMedian: Double = 0.0,
+    val closeMax: Double = 0.0,
+    val newsCount: Long = 0L,
+    val normalGapCount: Int = 0,
+    val unexpectedGaps: List<com.tradequest.data.ClassifiedGap> = emptyList(),
+    val offsetMs: Long = 0L,
+    val histNow: Long = 0L,
+    val lastVisibleTs: Long = 0L,
+    val weeksAhead: Int = 0,
+    val source: DatasetSource = DatasetSource.MISSING,
+    val assetName: String? = null,
+    /** Provenance from the meta file, when present: source / fetchedAt / rowCount. */
+    val metaSource: String? = null,
+    val metaFetchedAt: String? = null,
+    val metaRowCount: Long = 0L,
+    /** Why the dataset was rejected, when the error screen is showing. */
+    val failureReason: String? = null,
+)
+
+data class AccountStrip(
+    val balance: Double,
+    val equity: Double,
+    val floatingPnl: Double,
+    val dayPnl: Double,
+    val marginLevel: Double,
+    val openPositions: Int,
+    val pendingOrders: Int,
+)
+
+/**
+ * Wires the replayed clock, the chart and the trading layer together.
+ *
+ * Catch-up runs on every open/resume (the source of truth); the periodic worker is only
+ * a notifier. All state lives in Room, so process death loses nothing.
+ */
+@HiltViewModel
+class TradingViewModel @Inject constructor(
+    private val db: TradeQuestDatabase,
+    private val seasons: SeasonRepository,
+    private val trading: TradingRepository,
+    private val candles: CandleRepository,
+    private val settings: SettingsRepository,
+    private val preferences: PreferencesStore,
+    private val catchUp: CatchUpProcessor,
+    assetSource: AssetSource,
+) : ViewModel() {
+
+    val controller = ChartController(emptyList())
+
+    private val assets: AssetSource = assetSource
+    private val dailyStats: DailyStatsDao = db.dailyStatsDao()
+    private val snapshots: EquitySnapshotDao = db.equitySnapshotDao()
+
+    private val _startup = MutableStateFlow(StartupState())
+    val startup: StateFlow<StartupState> = _startup.asStateFlow()
+
+    private val _quote = MutableStateFlow(Quote(0.0, 0.0, 0.0))
+    val quote: StateFlow<Quote> = _quote.asStateFlow()
+
+    /**
+     * Screen-only quote: the same bid/ask as [quote] but with the bid smoothed along the
+     * forming candle's deterministic display path. Buy/Sell buttons and the equity strip
+     * read this; fills and P&L read [quote], the real closed candle.
+     */
+    private val _displayQuote = MutableStateFlow(Quote(0.0, 0.0, 0.0))
+    val displayQuote: StateFlow<Quote> = _displayQuote.asStateFlow()
+
+    private val _strip = MutableStateFlow(AccountStrip(0.0, 0.0, 0.0, 0.0, Double.MAX_VALUE, 0, 0))
+    val strip: StateFlow<AccountStrip> = _strip.asStateFlow()
+
+    /**
+     * The equity strip recomputed at the smoothed display price, so the strip's equity and
+     * floating P&L breathe between closes. The authoritative [strip] never changes from the
+     * display path.
+     */
+    private val _displayStrip = MutableStateFlow(AccountStrip(0.0, 0.0, 0.0, 0.0, Double.MAX_VALUE, 0, 0))
+    val displayStrip: StateFlow<AccountStrip> = _displayStrip.asStateFlow()
+
+    private val _histNow = MutableStateFlow(0L)
+    val histNow: StateFlow<Long> = _histNow.asStateFlow()
+
+    private val _marketClosed = MutableStateFlow(false)
+    val marketClosed: StateFlow<Boolean> = _marketClosed.asStateFlow()
+
+    /** While the market is shut: the next open and the wait, updated every minute. */
+    private val _closedNotice = MutableStateFlow<ClosedNotice?>(null)
+    val closedNotice: StateFlow<ClosedNotice?> = _closedNotice.asStateFlow()
+
+    /** True after a debug time-travel found nothing left to replay. */
+    private val _timeTravelExhausted = MutableStateFlow(false)
+    val timeTravelExhausted: StateFlow<Boolean> = _timeTravelExhausted.asStateFlow()
+
+    private val _riskPercent = MutableStateFlow(1.0)
+    val riskPercent: StateFlow<Double> = _riskPercent.asStateFlow()
+
+    private val _dataStats = MutableStateFlow(DataStats())
+    val dataStats: StateFlow<DataStats> = _dataStats.asStateFlow()
+
+    /** True only if generated placeholder data was ever imported; drives the red banner. */
+    private val _fakeActive = MutableStateFlow(false)
+    val fakeActive: StateFlow<Boolean> = _fakeActive.asStateFlow()
+
+    /** True when a dataset re-import moved the range; the in-progress season must be reset. */
+    private val _datasetChanged = MutableStateFlow(false)
+    val datasetChanged: StateFlow<Boolean> = _datasetChanged.asStateFlow()
+
+    /** Last order-submit failure, for a snackbar. Null when the last submit was accepted. */
+    private val _submitError = MutableStateFlow<String?>(null)
+    val submitError: StateFlow<String?> = _submitError.asStateFlow()
+
+    private var news: List<NewsEvent> = emptyList()
+    private var seasonId: Long = 0L
+    private var offsetMs: Long = 0L
+
+    /**
+     * True only once bootstrap has finished loading the window and attaching observers.
+     * Exposed so the UI (and tests) can distinguish "data ready to trade" from the earlier
+     * moment the startup phase reports READY, which precedes window loading.
+     */
+    private val _ready = MutableStateFlow(false)
+    val ready: StateFlow<Boolean> = _ready.asStateFlow()
+
+    /** Serialises catch-up: the minute tick, resume and debug travel can all trigger it. */
+    private val catchUpMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** Set while a catch-up run holds [catchUpMutex]; a submit that has to wait logs it. */
+    @Volatile
+    private var catchUpRunning = false
+
+    /** Historical-clock shift; displayed times = stored UTC + this, in the device zone. */
+    private val _displayOffsetMs = MutableStateFlow(0L)
+    val displayOffsetMs: StateFlow<Long> = _displayOffsetMs.asStateFlow()
+
+    /** The candle the display path walks (the minute forming at the replayed clock). */
+    @Volatile
+    private var displayCandle: Candle? = null
+    @Volatile
+    private var displayCandleHistNow: Long = 0L
+
+    private var displayJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * The last account state read from Room. Held only so the display ticker can recompute
+     * the strip's equity between closes without a database read four times a second. Never
+     * used for validation or fills.
+     */
+    @Volatile
+    private var loadedAccountState: AccountState? = null
+
+    /** Last price painted by the display ticker; used to re-sync after a derived refresh. */
+    @Volatile
+    private var displayPriceCache: Double? = null
+
+    /** The active season, cached so the display ticker can re-derive `histNow` cheaply. */
+    @Volatile
+    private var activeSeason: Season? = null
+
+    private val seasonFlow = seasons.activeFlow()
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val liveOrders: StateFlow<List<TradeOrder>> = seasonFlow
+        .flatMapLatest { s -> if (s == null) flowOf(emptyList()) else trading.liveOrders(s.id) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val history: StateFlow<List<TradeOrder>> = seasonFlow
+        .flatMapLatest { s ->
+            if (s == null) flowOf(emptyList())
+            else trading.closedOrders(s.id)
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    init {
+        viewModelScope.launch {
+            try {
+                bootstrap()
+            } catch (t: Throwable) {
+                // A bootstrap failure used to leave the app showing live prices with every
+                // order silently dropped. Surface it instead of pretending to be ready.
+                Log.e(TAG, "bootstrap failed", t)
+                _startup.value = StartupState(
+                    phase = StartupPhase.ERROR,
+                    error = t.message ?: t::class.java.simpleName,
+                )
+            }
+        }
+    }
+
+    private suspend fun bootstrap() {
+        // Apply the saved theme before anything heavy, so the UI colours are right early.
+        controller.setTheme(themeForId(preferences.themeIdOnce()))
+        controller.setLabelSize(PriceLabelSize.fromId(preferences.labelSizeIdOnce()))
+        controller.setShowCountdown(preferences.showCountdownOnce())
+        val importedRows = settings.get(SettingsRepository.IMPORT_DONE, "0").toLongOrNull() ?: 0L
+        val storedSource = DatasetSource.fromId(settings.get(SettingsRepository.DATA_SOURCE, ""))
+        // allowFake is never passed here: production code must not replay generated data.
+        // One-time repair: an earlier install that imported a tiny (or no) asset is
+        // superseded by a real import (or surfaced as an error) once the bundle is present.
+        // `force` rewrites candle_1m and news_event only, preserving trades/season rows.
+        val needsImport = importedRows < DatasetImporter.MIN_EXPECTED_ROWS ||
+            storedSource == null || storedSource == DatasetSource.MISSING ||
+            storedSource == DatasetSource.FAKE || storedSource == DatasetSource.UNVERIFIED
+        if (needsImport) {
+            val result = DatasetImporter.import(db, assets, force = true) { p -> reportImport(p) }
+            if (result.source == DatasetSource.MISSING || result.source == DatasetSource.UNVERIFIED) {
+                _startup.value = StartupState(
+                    phase = StartupPhase.ERROR,
+                    error = missingAssetMessage(result),
+                )
+                return
+            }
+            settings.put(SettingsRepository.IMPORT_DONE, result.candleCount.toString())
+            settings.put(SettingsRepository.DATA_SOURCE, result.source.name)
+            _datasetChanged.value = result.rangeChanged
+        }
+        _fakeActive.value = settings.get(SettingsRepository.DATA_SOURCE, "") == DatasetSource.FAKE.name
+        observeRiskPercent()
+
+        if (_datasetChanged.value) {
+            // The dataset range moved; the stored season offset no longer matches. Surface
+            // it and make the user reset before any catch-up touches a misaligned clock.
+            _startup.value = StartupState(phase = StartupPhase.READY)
+            return
+        }
+
+        startSeason()
+        markReady()
+    }
+
+    private fun missingAssetMessage(result: ImportResult): String {
+        result.failureReason?.let { return "Dataset rejected.\n\n$it" }
+        val name = result.assetName ?: DatasetImporter.CANDLE_ASSET
+        return "Bundled market data is missing or too small.\n\n" +
+            "Looked for assets/$name (and ${DatasetImporter.CANDLE_ASSET_PLAIN}); " +
+            "found ${result.assetRows} candle rows, need at least ${DatasetImporter.MIN_EXPECTED_ROWS}.\n\n" +
+            "The app will not run on generated placeholder data."
+    }
+
+    /** Attach the tick/order observers and mark trading as ready. Idempotent. */
+    private fun markReady() {
+        if (_ready.value) return
+        _ready.value = true
+        observeTicker()
+        observeOrders()
+        startDisplayTicker()
+    }
+
+    // ------------------------------------------------------- display (visual only)
+
+    /**
+     * Four updates a second, walking the forming candle's deterministic display path. This
+     * is purely cosmetic: it only paints the price line/tag and the Buy/Sell/equity labels.
+     * No order, fill, SL/TP trigger or P&L ever reads these values.
+     */
+    private fun startDisplayTicker() {
+        if (displayJob?.isActive == true) return
+        displayJob = viewModelScope.launch(Dispatchers.Main) {
+            while (isActive) {
+                publishDisplayTick()
+                delay(DISPLAY_TICK_MS)
+            }
+        }
+    }
+
+    /** Recompute the screen-only price from the forming candle and the replayed clock. */
+    private fun publishDisplayTick() {
+        val candle = displayCandle
+        val season = activeSeason
+        val now = if (season != null) seasons.histNow(season) else displayCandleHistNow
+        val closed = now > 0L && isMarketClosed(now)
+        val price = if (candle == null || closed) null
+        else LiveDisplayPath.valueAt(candle, now - candle.ts.toDouble())
+        displayPriceCache = price
+
+        controller.setDisplayPrice(price)
+        val base = _quote.value
+        // Until the authoritative quote is live we have no spread to mirror; leave the
+        // screen-only quote alone rather than publishing one with a zero spread.
+        if (base.bid <= 0.0) return
+        _displayQuote.value = if (price == null) base
+        else Quote(bid = price, ask = price + base.spread, spread = base.spread)
+        _displayStrip.value = recomputeStrip(_displayStrip.value, price ?: base.bid)
+    }
+
+    /**
+     * Re-point the screen-only quote/strip at the last display value after the authoritative
+     * candle advanced, without waiting for the next display tick.
+     */
+    private fun syncDisplayQuote() {
+        val price = displayPriceCache
+        val base = _quote.value
+        _displayQuote.value = if (price == null) base
+        else Quote(bid = price, ask = price + base.spread, spread = base.spread)
+        _displayStrip.value = recomputeStrip(_strip.value, price ?: base.bid)
+    }
+
+    /**
+     * Re-derive the strip's equity-dependent fields at [bid]. The balance, day-start and
+     * order counts are the authoritative ones already in [base]; only the market-dependent
+     * parts (equity, floating P&L and margin level) move with the display price.
+     */
+    private fun recomputeStrip(base: AccountStrip, bid: Double): AccountStrip {
+        if (bid <= 0.0) return base
+        val state = loadedAccountState ?: return base
+        val floating = state.positions.sumOf { pos ->
+            if (pos.side == Side.LONG) (bid - pos.entryPrice) * FillEngine.LOT_OZ * pos.lots
+            else (pos.entryPrice - bid) * FillEngine.LOT_OZ * pos.lots
+        }
+        val equity = state.balance + floating
+        val dayStart = base.equity - base.dayPnl
+        val margin = state.positions.sumOf { bid * it.lots }
+        val level = if (margin <= 0.0) Double.MAX_VALUE else equity / margin * 100.0
+        return base.copy(
+            equity = equity,
+            floatingPnl = floating,
+            dayPnl = equity - dayStart,
+            marginLevel = level,
+        )
+    }
+
+    /** Season-dependent startup, shared by first launch and the debug reset. */
+    private suspend fun startSeason() {
+        val season = seasons.ensureSeason()
+        seasonId = season.id
+        activeSeason = season
+        offsetMs = season.offsetMs
+        _displayOffsetMs.value = offsetMs
+        controller.setDisplayOffset(offsetMs)
+        // Publish the clock first so a submit arriving during catch-up has a valid histNow.
+        _histNow.value = seasons.histNow(season)
+        markReady()
+        runCatchUp(initial = true)
+        loadInitialWindow()
+    }
+
+    /** Debug-only: wipe all trades/season state, then replay a fresh $10,000 season. */
+    fun debugResetSeason() {
+        viewModelScope.launch {
+            seasons.resetActive()
+            _datasetChanged.value = false
+            startSeason()
+            refreshDerived()
+            if (!_ready.value) markReady()
+        }
+    }
+
+    /**
+     * Debug-only: advance the replayed clock by [minutes] and run the normal catch-up.
+     * Only the season's clock offset changes; candle and trade data are untouched. The
+     * clock is clamped so it can never move past the last bundled candle.
+     */
+    fun debugTimeTravel(minutes: Long) {
+        viewModelScope.launch {
+            val season = seasons.active() ?: return@launch
+            val updated = seasons.timeTravel(season.id, minutes)
+            _timeTravelExhausted.value = updated == null
+            if (updated == null) return@launch
+            offsetMs = updated.offsetMs
+            activeSeason = updated
+            _displayOffsetMs.value = offsetMs
+            controller.setDisplayOffset(offsetMs)
+            runCatchUp(initial = false)
+            loadInitialWindow()
+        }
+    }
+
+    private fun observeRiskPercent() {
+        viewModelScope.launch {
+            settings.flow(SettingsRepository.RISK_PERCENT, "1.0").collect { text ->
+                _riskPercent.value = text.toDoubleOrNull()?.coerceIn(0.1, 10.0) ?: 1.0
+            }
+        }
+    }
+
+    private fun reportImport(progress: ImportProgress) {
+        _startup.value = _startup.value.copy(
+            phase = StartupPhase.IMPORTING,
+            importFraction = if (progress.total > 0) progress.fraction
+            else if (progress.phase == ImportProgress.Phase.NEWS) 1f else 0.5f,
+        )
+    }
+
+    private suspend fun runCatchUp(initial: Boolean) {
+        catchUpRunning = true
+        try {
+            catchUpMutex.withLock { runCatchUpLocked(initial) }
+        } finally {
+            catchUpRunning = false
+        }
+    }
+
+    private suspend fun runCatchUpLocked(initial: Boolean) {
+        val season = seasons.active() ?: return
+        seasonId = season.id
+        val now = seasons.histNow(season)
+        _histNow.value = now
+        val from = season.lastProcessedTs
+        val gap = db.candleDao().countBetween(from, now)
+        if (gap > LARGE_GAP) {
+            _startup.value = _startup.value.copy(phase = StartupPhase.CATCHING_UP, catchUpFrom = from, catchUpTo = now)
+        }
+        val result = withContext(Dispatchers.Default) { catchUp.run(seasonId, now) }
+        if (gap > LARGE_GAP || initial) _startup.value = _startup.value.copy(phase = StartupPhase.READY)
+        if (result.processedCandles > 0) refreshDerived()
+    }
+
+    private suspend fun loadInitialWindow() {
+        news = db.newsDao().all().map { NewsEvent(it.ts, it.title, it.impact) }
+        val window = candles.upTo(_histNow.value, CandleRepository.DEFAULT_WINDOW)
+        controller.setDisplayOffset(offsetMs)
+        controller.replaceData(window, news)
+        // Set the authoritative quote before refreshDerived so the display quote it derives
+        // uses the real spread, not the zero-initialised one.
+        _quote.value = quoteFrom(window.lastOrNull())
+        refreshDerived()
+        refreshDataStats()
+    }
+
+    /** Re-read the small aggregates the "Data (debug)" panel shows, straight from Room. */
+    private suspend fun refreshDataStats() {
+        val summary = DatabaseIntrospector.summary(db)
+        val season = seasons.active()
+        val now = season?.let { seasons.histNow(it) } ?: 0L
+        val lastVisible = if (now > 0L) ClockEngine.lastVisibleCandleTs(now) else 0L
+        val weeksAhead = if (summary.lastTs > lastVisible) {
+            ((summary.lastTs - lastVisible) / MarketTime.WEEK_MS).toInt()
+        } else 0
+        val meta = DatasetMeta.read(assets)
+        _dataStats.value = DataStats(
+            rowCount = summary.candleCount,
+            firstTs = summary.firstTs,
+            lastTs = summary.lastTs,
+            closeFirst = summary.closeFirst,
+            closeLast = summary.closeLast,
+            closeMin = summary.closeMin,
+            closeMedian = summary.closeMedian,
+            closeMax = summary.closeMax,
+            newsCount = summary.newsCount,
+            normalGapCount = summary.normalGapCount,
+            unexpectedGaps = summary.unexpectedGaps,
+            offsetMs = season?.offsetMs ?: 0L,
+            histNow = now,
+            lastVisibleTs = lastVisible,
+            weeksAhead = weeksAhead,
+            source = DatasetSource.fromId(settings.get(SettingsRepository.DATA_SOURCE, ""))
+                ?: DatasetSource.MISSING,
+            assetName = DatasetImporter.bundledCandleAsset(assets),
+            metaSource = meta?.source,
+            metaFetchedAt = meta?.fetchedAt,
+            metaRowCount = meta?.rowCount ?: 0L,
+            failureReason = _startup.value.error,
+        )
+    }
+
+    private fun observeTicker() {
+        viewModelScope.launch {
+            candles.ticker.collect { visibleTs ->
+                val now = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
+                _histNow.value = now
+                // Fold every newly visible candle into the engine on the minute tick, so a
+                // market order fills when the next candle closes instead of only on reopen.
+                // runCatchUp is a no-op when there is nothing new to replay.
+                runCatchUp(initial = false)
+                val latest = candles.latestClosed(now)
+                if (latest != null) {
+                    controller.appendM1(latest, now + offsetMs)
+                }
+                _quote.value = quoteFrom(latest)
+                refreshDerived()
+                syncDisplayQuote()
+            }
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun observeOrders() {
+        viewModelScope.launch {
+            seasonFlow
+                .flatMapLatest { s -> if (s == null) flowOf(emptyList()) else trading.allOrders(s.id) }
+                .collect { orders -> applyOverlays(orders) }
+        }
+    }
+
+    private fun applyOverlays(orders: List<TradeOrder>) {
+        val quote = _quote.value
+        val bid = quote.bid
+        val lines = ArrayList<ChartOrderLine>()
+        val markers = ArrayList<ChartMarker>()
+        for (o in orders) {
+            when (o.status) {
+                OrderStatus.OPEN -> {
+                    val entry = o.entryPrice ?: continue
+                    val handles = buildList {
+                        if (o.sl == null) add(OrderLineKind.SL)
+                        if (o.tp == null) add(OrderLineKind.TP)
+                    }
+                    lines.add(
+                        ChartOrderLine(
+                            id = o.id, kind = OrderLineKind.ENTRY, price = entry, label = "Entry ${o.lots}L",
+                            pnlText = pnlTag(o, bid), positive = pnl(o, bid) >= 0, draggable = false,
+                            side = o.side, lots = o.lots, entryPrice = entry, handles = handles,
+                        ),
+                    )
+                    o.sl?.let {
+                        lines.add(levelLine(o, OrderLineKind.SL, it, entry))
+                    }
+                    o.tp?.let {
+                        lines.add(levelLine(o, OrderLineKind.TP, it, entry))
+                    }
+                    controller.barIndexForTs(o.openedAt ?: 0L).takeIf { it >= 0 }?.let {
+                        markers.add(ChartMarker(it, entry, entry = true, long = o.side == Side.LONG))
+                    }
+                }
+                OrderStatus.PENDING, OrderStatus.QUEUED -> {
+                    val price = o.entryPrice ?: continue
+                    val handles = buildList {
+                        if (o.sl == null) add(OrderLineKind.SL)
+                        if (o.tp == null) add(OrderLineKind.TP)
+                    }
+                    lines.add(
+                        ChartOrderLine(
+                            id = o.id, kind = OrderLineKind.PENDING, price = price, label = pendingLabel(o),
+                            draggable = true, side = o.side, lots = o.lots, entryPrice = price, handles = handles,
+                        ),
+                    )
+                    o.sl?.let { lines.add(levelLine(o, OrderLineKind.SL, it, price)) }
+                    o.tp?.let { lines.add(levelLine(o, OrderLineKind.TP, it, price)) }
+                }
+                OrderStatus.CLOSED -> {
+                    val exit = o.closePrice ?: continue
+                    val at = o.closedAt ?: continue
+                    controller.barIndexForTs(at).takeIf { it >= 0 }?.let {
+                        markers.add(ChartMarker(it, exit, entry = false, long = o.side == Side.LONG))
+                    }
+                }
+                OrderStatus.CANCELLED -> {}
+            }
+        }
+        controller.setOverlay(ChartOverlayState(lines = lines, markers = markers, bid = bid, spread = quote.spread))
+    }
+
+    private fun levelLine(o: TradeOrder, kind: OrderLineKind, price: Double, entry: Double) = ChartOrderLine(
+        id = o.id, kind = kind, price = price, draggable = true,
+        side = o.side, lots = o.lots, entryPrice = entry,
+    )
+
+    /**
+     * Persist a level edit from the chart through the same repository the Positions editors
+     * use, so both paths stay identical. Returns the repository's verdict for the UI.
+     */
+    suspend fun applyLevelOutcome(outcome: LevelOutcome): Boolean {
+        var ok = true
+        catchUpMutex.withLock {
+            when (outcome) {
+                is LevelOutcome.Set -> {
+                    if (outcome.kind == OrderLineKind.PENDING) {
+                        trading.movePendingPrice(seasonId, outcome.id, outcome.price)
+                    } else {
+                        val o = trading.order(outcome.id)
+                        if (o != null) {
+                            val sl = if (outcome.kind == OrderLineKind.SL) outcome.price else o.sl
+                            val tp = if (outcome.kind == OrderLineKind.TP) outcome.price else o.tp
+                            trading.editStops(seasonId, outcome.id, sl, tp)
+                        } else ok = false
+                    }
+                }
+                is LevelOutcome.Clear -> {
+                    val o = trading.order(outcome.id)
+                    if (o != null) {
+                        val sl = if (outcome.kind == OrderLineKind.SL) null else o.sl
+                        val tp = if (outcome.kind == OrderLineKind.TP) null else o.tp
+                        trading.editStops(seasonId, outcome.id, sl, tp)
+                    } else ok = false
+                }
+                else -> {}
+            }
+        }
+        refreshDerived()
+        return ok
+    }
+
+    private fun pnl(o: TradeOrder, bid: Double): Double =
+        if (bid <= 0.0) 0.0
+        else if (o.side == Side.LONG) (bid - (o.entryPrice ?: bid)) * FillEngine.LOT_OZ * o.lots
+        else ((o.entryPrice ?: bid) - bid) * FillEngine.LOT_OZ * o.lots
+
+    private fun pnlTag(o: TradeOrder, bid: Double): String? {
+        if (bid <= 0.0) return null
+        val p = pnl(o, bid)
+        return (if (p >= 0) "+" else "") + "%.2f".format(p)
+    }
+
+    private fun pendingLabel(o: TradeOrder): String = when (o.type) {
+        OrderType.BUY_LIMIT -> "Buy limit"
+        OrderType.BUY_STOP -> "Buy stop"
+        OrderType.SELL_LIMIT -> "Sell limit"
+        OrderType.SELL_STOP -> "Sell stop"
+        OrderType.MARKET -> "Market"
+    }
+
+    private fun quoteFrom(last: Candle?): Quote {
+        if (last == null) return Quote(0.0, 0.0, 0.0)
+        val spread = FillEngine.spreadAt(last.ts, news)
+        return Quote(bid = last.c, ask = last.c + spread, spread = spread)
+    }
+
+    private suspend fun refreshDerived() {
+        val season = seasons.active() ?: return
+        activeSeason = season
+        val state = loadAccountState().also { loadedAccountState = it }
+        val bid = _quote.value.bid
+        val floating = state.positions.sumOf { pos ->
+            if (bid <= 0.0) 0.0
+            else if (pos.side == Side.LONG) (bid - pos.entryPrice) * FillEngine.LOT_OZ * pos.lots
+            else (pos.entryPrice - bid) * FillEngine.LOT_OZ * pos.lots
+        }
+        val equity = state.balance + floating
+        val dayKey = com.tradequest.engine.MarketCalendar.dayStart(_histNow.value)
+        val day = dailyStats.forDay(seasonId, dayKey)
+        // The engine records the day-start equity at each rollover; prefer it, then the
+        // stored rollup, then the season balance. Never fall back to the season start, which
+        // made "Day P&L" silently show the whole-season P&L.
+        val dayStart = when {
+            day != null -> day.startEquity
+            state.dayStartEquity > 0.0 -> state.dayStartEquity
+            else -> season.startBalance
+        }
+        val dayPnl = equity - dayStart
+        dailyStats.upsert(
+            DailyStats(seasonId, dayKey, startEquity = dayStart, pnl = dayPnl, limitHit = state.dailyBlocked),
+        )
+        val margin = state.positions.sumOf { (if (bid > 0.0) bid else it.entryPrice) * it.lots }
+        val level = if (margin <= 0.0) Double.MAX_VALUE else equity / margin * 100.0
+        _strip.value = AccountStrip(
+            balance = state.balance,
+            equity = equity,
+            floatingPnl = floating,
+            dayPnl = dayPnl,
+            marginLevel = level,
+            openPositions = state.positions.size,
+            pendingOrders = state.orders.size,
+        )
+        val closed = isMarketClosed(_histNow.value)
+        _marketClosed.value = closed
+        controller.setMarketClosed(closed)
+        if (closed) {
+            val openHist = MarketCalendar.nextOpen(_histNow.value)
+            _closedNotice.value = ClosedNotice(
+                opensInMs = openHist - _histNow.value,
+                opensAtDisplayMs = openHist + offsetMs,
+            )
+            controller.setCountdown(null)
+        } else {
+            _closedNotice.value = null
+            if (_histNow.value > 0L) controller.setCountdown(candles.remainingToClose(_histNow.value))
+        }
+        sampleEquity(season, state, equity, margin)
+        // Point the display path at the candle forming at the replayed clock, so the visual
+        // walk is bounded by that candle's real range. Reads one row; never used for fills.
+        val now = seasons.histNow(season)
+        val forming = db.candleDao()
+            .lastBefore(MarketTime.floorTo(now, MarketTime.MINUTE_MS), 1)
+            .firstOrNull()?.toEngine()
+        displayCandle = forming
+        displayCandleHistNow = now
+        // Re-point the screen-only quote/strip now that the authoritative state is fresh, so
+        // the equity strip tracks the forming candle from the very first frame after load.
+        syncDisplayQuote()
+    }
+
+    /** Append one equity point per closed minute so the challenge can be charted later. */
+    private suspend fun sampleEquity(season: Season, state: AccountState, equity: Double, margin: Double) {
+        val ts = ClockEngine.lastVisibleCandleTs(_histNow.value)
+        if (ts <= 0L || ts <= (snapshots.latest(season.id)?.ts ?: Long.MIN_VALUE)) return
+        snapshots.insertAll(
+            listOf(EquitySnapshotEntity(season.id, ts, equity, state.balance, margin)),
+        )
+    }
+
+    private suspend fun loadAccountState() =
+        AccountCheckpoint
+            .decode(db.settingsDao().get(AccountCheckpoint.KEY), seasons.active()?.startBalance ?: 0.0)
+            .toEngine()
+
+    // ---------------------------------------------------------------- actions
+
+    /** Re-run catch-up when the app comes back to the foreground. */
+    fun onResume() {
+        if (!_ready.value) return
+        viewModelScope.launch { runCatchUp(initial = false) }
+    }
+
+    fun setTimeframe(tf: Timeframe) = controller.setTimeframe(tf)
+
+    /** Applies the theme immediately and persists the choice for the next launch. */
+    fun setTheme(theme: com.tradequest.chart.ChartTheme) {
+        controller.setTheme(theme)
+        viewModelScope.launch { preferences.setThemeId(theme.id.name) }
+    }
+
+    /** Applies the price-label size immediately and persists it for the next launch. */
+    fun setLabelSize(size: PriceLabelSize) {
+        controller.setLabelSize(size)
+        viewModelScope.launch { preferences.setLabelSizeId(size.name) }
+    }
+
+    /** Show/hide the candle-close countdown; persisted for the next launch. */
+    fun setShowCountdown(on: Boolean) {
+        controller.setShowCountdown(on)
+        viewModelScope.launch { preferences.setShowCountdown(on) }
+    }
+
+    fun setRiskPercent(percent: Double) {
+        _riskPercent.value = percent.coerceIn(0.1, 10.0)
+        viewModelScope.launch { settings.put(SettingsRepository.RISK_PERCENT, _riskPercent.value.toString()) }
+    }
+
+    /** Re-read the Data panel aggregates on demand (the sheet's Refresh button). */
+    fun refreshData() {
+        viewModelScope.launch { refreshDataStats() }
+    }
+
+    fun lotsForRisk(stopDistance: Double): Double =
+        RiskCalculator.lotsForRisk(_strip.value.equity, _riskPercent.value, stopDistance)
+
+    fun placeOrder(request: OrderRequest) {
+        Log.i(TAG, "placeOrder: tap received request=$request")
+        viewModelScope.launch {
+            val quote = _quote.value
+            val histNow = _histNow.value
+            val marketClosed = isMarketClosed(histNow)
+            val state = loadAccountState()
+            Log.i(
+                TAG,
+                "placeOrder: quote=${quote.bid}/${quote.ask} spread=${quote.spread} " +
+                    "histNow=$histNow seasonId=$seasonId marketClosed=$marketClosed " +
+                    "ready=${_ready.value} scopeActive=${viewModelScope.isActive} balance=${state.balance} " +
+                    "positions=${state.positions.size} orders=${state.orders.size} " +
+                    "dailyBlocked=${state.dailyBlocked}",
+            )
+
+            val reason = when {
+                !_ready.value -> "$NOT_READY_MESSAGE (still importing or catching up)"
+                seasonId <= 0L -> "no active season"
+                request.lots <= 0.0 -> "lot size must be greater than 0"
+                quote.bid <= 0.0 && request.type == OrderType.MARKET -> "no live quote yet"
+                state.dailyBlocked -> "daily loss limit reached; new orders are blocked today"
+                else -> OrderRules.requestError(
+                    request,
+                    bid = quote.bid,
+                    ask = quote.ask,
+                    spread = quote.spread,
+                    entry = entryFor(request, quote),
+                )
+            }
+            if (reason != null) {
+                Log.w(TAG, "placeOrder: early return - $reason")
+                _submitError.value = reason
+                return@launch
+            }
+            if (catchUpRunning) {
+                Log.i(TAG, "placeOrder: waiting for the in-flight catch-up to release the lock")
+            }
+
+            try {
+                catchUpMutex.withLock {
+                    val id = trading.place(seasonId, request, histNow, bid = quote.bid, ask = quote.ask)
+                    Log.i(TAG, "placeOrder: accepted id=$id type=${request.type} side=${request.side}")
+                }
+                _submitError.value = null
+                refreshDerived()
+                Log.i(TAG, "placeOrder: done liveOrders=${db.tradeOrderDao().live(seasonId).size}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "placeOrder: failed to submit", t)
+                _submitError.value = "Order failed: ${t.message ?: t::class.simpleName}"
+            }
+        }
+    }
+
+    /** Clear the snackbar once the UI has shown [submitError]. */
+    fun clearSubmitError() {
+        _submitError.value = null
+    }
+
+    fun cancelOrder(orderId: Long) {
+        viewModelScope.launch {
+            catchUpMutex.withLock { trading.cancel(seasonId, orderId) }
+            refreshDerived()
+        }
+    }
+
+    fun closePosition(positionId: Long, lots: Double? = null) {
+        viewModelScope.launch {
+            try {
+                // A long is closed at the bid, a short at the ask. That same price is what
+                // gets persisted and fed into the P&L, so the row always reconciles.
+                val q = _quote.value
+                val existing = trading.order(positionId)
+                val exitPrice = if (existing?.side == Side.SHORT) q.ask else q.bid
+                catchUpMutex.withLock {
+                    // The live market's "now" is the last visible candle; that is the close time.
+                    trading.closePosition(seasonId, positionId, exitPrice, ClockEngine.lastVisibleCandleTs(_histNow.value), lots)
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "closePosition: failed positionId=$positionId lots=$lots", t)
+                _submitError.value = "Could not close the position: ${t.message}"
+                return@launch
+            }
+            refreshDerived()
+        }
+    }
+
+    fun editStops(orderId: Long, sl: Double?, tp: Double?) {
+        viewModelScope.launch {
+            val existing = trading.order(orderId)
+            val entry = existing?.entryPrice
+            if (existing != null && entry != null) {
+                OrderRules.stopsError(existing.side, entry, sl, tp)?.let {
+                    _submitError.value = it
+                    return@launch
+                }
+            }
+            catchUpMutex.withLock { trading.editStops(seasonId, orderId, sl, tp) }
+            refreshDerived()
+        }
+    }
+
+    /** Bid/ask for the order sheet, defaulting entry to the side's aggressive price. */
+    fun entryPriceFor(type: OrderType): Double = when (type) {
+        OrderType.MARKET, OrderType.BUY_LIMIT, OrderType.BUY_STOP -> _quote.value.ask
+        OrderType.SELL_LIMIT, OrderType.SELL_STOP -> _quote.value.bid
+    }
+
+    /** The price a submitted order would use, for validating its SL/TP against the entry. */
+    private fun entryFor(request: OrderRequest, quote: Quote): Double =
+        request.price?.takeIf { it > 0.0 } ?: when (request.type) {
+            OrderType.MARKET -> if (request.side == Side.SHORT) quote.bid else quote.ask
+            OrderType.SELL_LIMIT, OrderType.SELL_STOP -> quote.bid
+            OrderType.BUY_LIMIT, OrderType.BUY_STOP -> quote.ask
+        }
+
+    companion object {
+        private const val LARGE_GAP = 5_000L
+        /** Display-path step: 4 updates a second. */
+        private const val DISPLAY_TICK_MS = 250L
+        private const val TAG = "TradeQuest"
+        private const val NOT_READY_MESSAGE = "Market data is still loading"
+    }
+}
+
+/** The engine calendar decides when the replayed market is shut for the weekend. */
+fun isMarketClosed(ts: Long): Boolean = ts > 0L && MarketCalendar.isClosed(ts)

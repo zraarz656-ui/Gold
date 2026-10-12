@@ -74,6 +74,45 @@ object MarketCalendar {
     }
 
     /**
+     * True when [ts] sits in the weekend shutdown (Friday 17:00 through Sunday 17:00
+     * New York), i.e. exactly when [isClosed] holds. Gaps that land inside this window
+     * are the normal weekend break and are not real data gaps.
+     */
+    fun isWeekend(ts: Long): Boolean = isClosed(ts)
+
+    /** True when [ts] is a regular weekday session minute, i.e. the market is open. */
+    fun isWeekdayOpen(ts: Long): Boolean = !isClosed(ts)
+
+    /**
+     * True while the FX market is closed for the weekend: from the Friday 17:00 New York
+     * rollover until Sunday 17:00 New York.
+     */
+    fun isClosed(ts: Long): Boolean {
+        val z = zdt(ts)
+        val minutes = z.hour * 60 + z.minute
+        val rollover = MarketTime.ROLLOVER_HOUR * 60
+        return when (z.dayOfWeek.value) {
+            5 -> minutes >= rollover
+            6 -> true
+            7 -> minutes < rollover
+            else -> false
+        }
+    }
+
+    /**
+     * The instant the market next opens at or after [ts]. Outside the weekend shutdown this
+     * is [ts] itself; inside it, the upcoming Sunday 17:00 New York boundary (the weekly open).
+     */
+    fun nextOpen(ts: Long): Long {
+        if (!isClosed(ts)) return ts
+        val z = zdt(ts)
+        val daysSinceSunday = z.dayOfWeek.value % 7L
+        val sunday = z.toLocalDate().minusDays(daysSinceSunday)
+        val candidate = epoch(sunday, ROLLOVER)
+        return if (candidate >= ts) candidate else epoch(sunday.plusWeeks(1), ROLLOVER)
+    }
+
+    /**
      * Start of the [tf] bucket that contains [ts].
      *
      * @throws IllegalArgumentException if [tf] is [Timeframe.M1], which is already the

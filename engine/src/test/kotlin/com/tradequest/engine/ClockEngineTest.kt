@@ -110,4 +110,48 @@ class ClockEngineTest {
         assertFalse(ClockEngine.isSeasonOver(last, last))
         assertTrue(ClockEngine.isSeasonOver(last + 2 * MIN, last))
     }
+
+    /**
+     * The rightmost candle must read as "the present". A whole-week shift preserves the
+     * minute of day, so the last visible candle's displayed time equals real-now floored to
+     * the minute, i.e. within a minute. 20 random instants across weekdays and times.
+     */
+    @Test
+    fun `last visible candle displays within two minutes of real now`() {
+        val start = TestSupport.utc(2026, 7, 6, 0, 0) // bundled dataset start
+        val rnd = Random(1234)
+        repeat(20) { i ->
+            val realNow = start + 2 * WEEK + rnd.nextLong(0, 13 * WEEK)
+            val offset = ClockEngine.computeOffset(realNow, start)
+            val histNow = ClockEngine.histNow(realNow, offset)
+            val displayed = ClockEngine.lastVisibleCandleTs(histNow) + offset
+            val diff = Math.abs(displayed - realNow)
+            assertTrue(
+                diff <= 2 * MIN,
+                "sample $i: realNow=$realNow displayed=$displayed diff=${diff}ms (>2min)",
+            )
+        }
+    }
+
+    /**
+     * The displayed time keeps the weekday and the minute of day of real-now, which is what
+     * makes the axis "read as the present date" rather than merely within tolerance.
+     */
+    @Test
+    fun `displayed time keeps weekday and minute of day`() {
+        val start = TestSupport.utc(2026, 7, 6, 0, 0)
+        val rnd = Random(555)
+        repeat(20) {
+            val realNow = start + 2 * WEEK + rnd.nextLong(0, 13 * WEEK)
+            val offset = ClockEngine.computeOffset(realNow, start)
+            val histNow = ClockEngine.histNow(realNow, offset)
+            val displayed = ClockEngine.lastVisibleCandleTs(histNow) + offset
+            val realZ = Instant.ofEpochMilli(realNow).atZone(ZoneOffset.UTC)
+            val dispZ = Instant.ofEpochMilli(displayed).atZone(ZoneOffset.UTC)
+            assertEquals(realZ.dayOfWeek, dispZ.dayOfWeek)
+            // Displayed candle is real-now floored to the minute, then one minute back
+            // (the last *completed* candle), so the gap is 60-119s.
+            assertEquals(realNow % MIN + MIN, realNow - displayed)
+        }
+    }
 }

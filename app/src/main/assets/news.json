@@ -1,0 +1,154 @@
+{
+  "events": [
+    {
+      "ts": 1783302300000,
+      "title": "China Caixin Manufacturing PMI",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1783600200000,
+      "title": "Initial Jobless Claims",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1784106000000,
+      "title": "Eurozone Flash CPI",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1784642400000,
+      "title": "ISM Manufacturing PMI",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1785116700000,
+      "title": "China Caixin Manufacturing PMI",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1785155400000,
+      "title": "US Non-Farm Payrolls",
+      "impact": "HIGH"
+    },
+    {
+      "ts": 1785414600000,
+      "title": "Initial Jobless Claims",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1785434400000,
+      "title": "FOMC Statement",
+      "impact": "HIGH"
+    },
+    {
+      "ts": 1785920400000,
+      "title": "Eurozone Flash CPI",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1786456800000,
+      "title": "US Consumer Confidence",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1786709700000,
+      "title": "ECB Rate Decision",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1786969800000,
+      "title": "US Durable Goods Orders",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1787229000000,
+      "title": "US Core PCE Price Index",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1787241600000,
+      "title": "Fed Chair Powell Speech",
+      "impact": "HIGH"
+    },
+    {
+      "ts": 1787573700000,
+      "title": "US ADP Employment Change",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1787752800000,
+      "title": "University of Michigan Sentiment",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1788271200000,
+      "title": "US Consumer Confidence",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1788524100000,
+      "title": "ECB Rate Decision",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1788784200000,
+      "title": "US Durable Goods Orders",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1789043400000,
+      "title": "US Core PCE Price Index",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1789056000000,
+      "title": "Fed Chair Powell Speech",
+      "impact": "HIGH"
+    },
+    {
+      "ts": 1789388100000,
+      "title": "US ADP Employment Change",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1789567200000,
+      "title": "University of Michigan Sentiment",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1790085600000,
+      "title": "ISM Manufacturing PMI",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1790339400000,
+      "title": "US GDP q/q (advance)",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1790598600000,
+      "title": "US Retail Sales",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1790857800000,
+      "title": "US CPI y/y",
+      "impact": "HIGH"
+    },
+    {
+      "ts": 1790877600000,
+      "title": "Fed FOMC Minutes",
+      "impact": "MEDIUM"
+    },
+    {
+      "ts": 1791208800000,
+      "title": "US JOLTS Job Openings",
+      "impact": "LOW"
+    },
+    {
+      "ts": 1792153800000,
+      "title": "US GDP q/q (advance)",
+      "impact": "MEDIUM"
+    }
+  ]
+}
