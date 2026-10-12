@@ -4,6 +4,33 @@ Offline, single-user Android app. Kotlin + Jetpack Compose, MVVM, Hilt, Room,
 Coroutines/Flow, WorkManager, DataStore. XAUUSD only; a "live" market is replayed from
 bundled 1-minute history using a whole-week time offset.
 
+## Phase 3 → Phase 4 handoff (read this first)
+- **State:** Phase 3 is implemented and green. Phase 4 has not started. There is no Phase 4
+  spec in the repo — paste the Phase 4 brief at the start of the conversation.
+- **Branches (do not assume `main` is current):**
+  - `phase3-reconstruction` — the preserved Phase 1/2/3 branch. **Must stay untouched.**
+    Contains `5019546` (intra-candle display path) and `20b4753` (smooth display that does not
+    reveal the future; market taps fill at the shown price). Pushed to origin.
+  - `phase3-display-only` — the current working branch (`b245fa7`). Contains the forming-candle
+    display fix (see the forming-candle section below) plus 16 commits of clock/UI fixes. It is
+    branched from the merge base `5019546` and does **not** contain `20b4753`. Pushed to origin.
+  - Both branches reworked the same display ticker / `LiveDisplayPath` / `DisplayPriceIsolationTest`
+    / this file, so a merge is a real conflict resolution, not a fast-forward.
+- **Base-branch decision required before Phase 4 starts:** pick `phase3-display-only` as the
+  Phase 4 base (recommended — it carries the forming-candle fix and the latest clock fixes) or
+  reconcile the two Phase 3 branches first. Do not branch off `main`; `main` is Phase 1-era.
+- **Standing constraints:** keep the `ClockEngine` week-2 replay anchor and all `engine` rules
+  exactly (Decision C); recovered Phase 1/2 code is the source of truth (strict source fidelity);
+  do not create PRs unless asked; if the current branch is main/master/deploy, cut a new
+  descriptive branch, otherwise reuse the current branch name.
+- **Environment:** the sandbox `$HOME` can be wiped between sessions. The toolchain lives on the
+  persistent `/workspace` mount (see Build & test). Build/test commands are below.
+- **Green suite (debug variants):** `:engine:test` 54, `:data:test` 89, `:chart:testDebugUnitTest`
+  119, `:app:testDebugUnitTest` 56 — 0 failures. One pre-existing failure survives only under the
+  release variant (see "Pre-existing test failure").
+- **GitHub push:** the env `GITHUB_TOKEN`/`GH_PUSH_TOKEN` lacked `contents:write`; a classic token
+  passed in the push URL worked. Never write a token into `.git/config`; pass it in the URL only.
+
 ## Modules
 
 - `engine` — pure Kotlin/JVM (no Android). `ClockEngine`, `MarketCalendar`, `Aggregator`,
@@ -309,12 +336,12 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
 ## Frozen current-price tag + follow-mode on timeframe/zoom (display-only build)
 - **Frozen tag ("price not moving").** The display path derived its `elapsedMs` from
   `_histNow`, which is only refreshed on the minute tick. Within a minute it therefore held
-  the minute's *start* instant, so `displayPathPrice()` returned `valueAt(candle, 0)` � the
+  the minute's *start* instant, so `displayPathPrice()` returned `valueAt(candle, 0)` — the
   display path's first value, which is the open of the candle the walk is banded around.
   That pinned the current-price tag (and the Buy/Sell labels, which read `displayQuote`) to a
   single value for the whole minute. Fix: the display frame derives its own replayed clock
   `displayHistNowNow() = now() - offsetMs` from the injected wall clock (guarded on
-  `_histNow > 0L`, NOT on a positive offset � offset 0 is legitimate), so the walk advances
+  `_histNow > 0L`, NOT on a positive offset — offset 0 is legitimate), so the walk advances
   continuously. The tag keeps reading `displayQuote.bid = displayPathPrice()` (the live quote,
   mid-line convention: bid tag/Sell, ask = bid + real spread for Buy); the candle open is
   never the tag source. Regression: `LivePriceTagTest` (fails without the fix).
