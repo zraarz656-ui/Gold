@@ -185,6 +185,15 @@ class TradingViewModel @Inject constructor(
     @Volatile
     private var lastTickHistNow: Long = 0L
 
+    /**
+     * WATCHDOG: how many boundary ticks have stamped [lastTickWallMs]. A test reads this to
+     * prove no display/settings path writes it (the value is often 0 → 0, so equality alone
+     * cannot show the absence of a write).
+     */
+    @Volatile
+    var lastTickStampCount: Int = 0
+        private set
+
     /** WATCHDOG: the last throwable that killed the tick collector, for stall diagnostics. */
     @Volatile
     private var lastTickError: Throwable? = null
@@ -597,8 +606,11 @@ class TradingViewModel @Inject constructor(
         refreshDataStats()
     }
 
-    /** Re-read the small aggregates the "Data (debug)" panel shows, straight from Room. */
-    private suspend fun refreshDataStats() {
+    /**
+     * Re-read the small aggregates the "Data (debug)" panel shows, straight from Room.
+     * internal (not private) so the lastTick-write regression test can drive it directly.
+     */
+    internal suspend fun refreshDataStats() {
         val summary = DatabaseIntrospector.summary(db)
         val season = seasons.active()
         val now = season?.let { seasons.histNow(it) } ?: 0L
@@ -633,6 +645,45 @@ class TradingViewModel @Inject constructor(
         )
     }
 
+    /**
+     * The single writer of [lastTickWallMs]. Only a real minute-boundary tick may move it:
+     * a `collectRestarting` restart re-delivers the current ticker value, and a stray
+     * non-boundary publish would otherwise re-stamp `lastTick` at a recent off-minute
+     * instant. `visibleTs` is `ClockEngine.lastVisibleCandleTs(histNow)`, always a boundary,
+     * so a tick whose value is not on a minute is dropped (and logged with its stack).
+     *
+     * The tick lands a hair past the boundary (LiveClock.TICK_LAG_MS), so the recorded
+     * instant is the boundary itself, never the lagged wall read — lastTick is always :00.
+     */
+    private fun stampLastTick(wallMs: Long, visibleTs: Long, tickHistNow: Long) {
+        if (visibleTs <= 0L || Math.floorMod(visibleTs, CandleRepository.MINUTE_MS) != 0L) {
+            Log.w(
+                TAG,
+                "lastTick not stamped: tick is not on a minute boundary " +
+                    "visibleTs=$visibleTs histNow=$tickHistNow wallMs=$wallMs",
+                Throwable("off-boundary tick"),
+            )
+            return
+        }
+        val boundary = MarketTime.floorTo(wallMs, CandleRepository.MINUTE_MS)
+        if (wallMs - boundary > BOUNDARY_SLOP_MS) {
+            // The tick fired well past its boundary: a late/off-minute tick. Log the source.
+            Log.w(
+                TAG,
+                "lastTick late by ${wallMs - boundary}ms: boundary=$boundary wallMs=$wallMs " +
+                    "visibleTs=$visibleTs histNow=$tickHistNow",
+                Throwable("late tick"),
+            )
+        }
+        _lastTickWallMs.value = boundary
+        lastTickStampCount += 1
+        Log.i(
+            TAG,
+            "lastTick stamped boundary=$boundary wallMs=$wallMs lag=${wallMs - boundary}ms " +
+                "visibleTs=$visibleTs histNow=$tickHistNow",
+        )
+    }
+
     private fun observeTicker() {
         viewModelScope.launch {
             // WATCHDOG: a bare `collect` on a hot StateFlow is cancelled for good by a single
@@ -652,8 +703,10 @@ class TradingViewModel @Inject constructor(
                 if (visibleTs <= 0L) return@collectRestarting
                 val tickHistNow = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
                 _histNow.value = tickHistNow
-                // now() is the injected wall clock (System.currentTimeMillis() in the app).
-                _lastTickWallMs.value = now()
+                // The only writer of lastTick. A `collectRestarting` restart re-delivers the
+                // current value, and a stray publish could carry a non-boundary ts; both are
+                // dropped here so lastTick can only ever be a minute boundary.
+                stampLastTick(now(), visibleTs, tickHistNow)
                 lastTickHistNow = tickHistNow // WATCHDOG
                 // Fold every newly visible candle into the engine on the minute tick, so a
                 // market order fills when the next candle closes instead of only on reopen.
@@ -802,7 +855,8 @@ class TradingViewModel @Inject constructor(
         return Quote(bid = last.c, ask = last.c + spread, spread = spread)
     }
 
-    private suspend fun refreshDerived() {
+    /** internal (not private) so the lastTick-write regression test can drive it directly. */
+    internal suspend fun refreshDerived() {
         val season = seasons.active() ?: return
         activeSeason = season
         val state = loadAccountState().also { loadedAccountState = it }
@@ -1067,6 +1121,12 @@ class TradingViewModel @Inject constructor(
         private const val WATCHDOG_MS = 90_000L
         /** WATCHDOG: delay before re-collecting the minute ticker after a failure. */
         private const val TICK_RESTART_MS = 1_000L
+        /**
+         * WATCHDOG: how far past a boundary a tick may fire before it is logged as late. The
+         * scheduled tick carries LiveClock.TICK_LAG_MS (50 ms); anything beyond this is a
+         * delay that resumed late, not the boundary tick.
+         */
+        private const val BOUNDARY_SLOP_MS = 1_500L
         private const val TAG = "TradeQuest"
         private const val NOT_READY_MESSAGE = "Market data is still loading"
     }
