@@ -5,8 +5,9 @@ Coroutines/Flow, WorkManager, DataStore. XAUUSD only; a "live" market is replaye
 bundled 1-minute history using a whole-week time offset.
 
 ## Phase 3 → Phase 4 handoff (read this first)
-- **State:** Phase 3 is implemented and green. Phase 4 has not started. There is no Phase 4
-  spec in the repo — paste the Phase 4 brief at the start of the conversation.
+- **State:** Phase 3 is implemented and green. Phase 4 is in progress: its **engine part** is
+  done (`SeasonRules`, `ScoreCalculator`; see the Phase 4 section below). The remaining Phase 4
+  work is the UI/repository wiring, done on the current branch (`phase3-display-only`); the UI wiring is not yet started.
 - **Branches (do not assume `main` is current):**
   - `phase3-reconstruction` — the preserved Phase 1/2/3 branch. **Must stay untouched.**
     Contains `5019546` (intra-candle display path) and `20b4753` (smooth display that does not
@@ -25,9 +26,10 @@ bundled 1-minute history using a whole-week time offset.
   descriptive branch, otherwise reuse the current branch name.
 - **Environment:** the sandbox `$HOME` can be wiped between sessions. The toolchain lives on the
   persistent `/workspace` mount (see Build & test). Build/test commands are below.
-- **Green suite (debug variants):** `:engine:test` 54, `:data:test` 89, `:chart:testDebugUnitTest`
-  119, `:app:testDebugUnitTest` 56 — 0 failures. One pre-existing failure survives only under the
-  release variant (see "Pre-existing test failure").
+- **Green suite:** both debug and release variants pass except the two pre-existing release-only
+  `ClockLogSectionTest` failures. Counts: `:engine:test` 89, `:data:test*UnitTest` 89 (debug and
+  release), `:chart:test*UnitTest` 119 (debug and release), `:app:testDebugUnitTest` 56,
+  `:app:testReleaseUnitTest` 45 with 2 failures. See "Pre-existing test failure".
 - **GitHub push:** the env `GITHUB_TOKEN`/`GH_PUSH_TOKEN` lacked `contents:write`; a classic token
   passed in the push URL worked. Never write a token into `.git/config`; pass it in the URL only.
 
@@ -394,6 +396,29 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   closed candle. Tests: `FormingBarTest` (chart), `FormingCandleDisplayTest` (app);
   `DisplayPriceIsolationTest` updated to assert against the forming bar.
 - **Note:** fills/SL/TP/P&L paths are untouched. The engine never reads `FormingBar`.
+
+## Phase 4 - Season rules and scoring (engine part, done)
+- **Scope:** pure `engine` only. `FillEngine`, the stop path and the display path are untouched.
+  New files: `engine/src/main/kotlin/com/tradequest/engine/SeasonRules.kt` and `ScoreCalculator.kt`.
+- **SeasonRules** grades the 12-week challenge candle by candle (`observe` returns a
+  `SeasonDecision` on the exact candle the season ends). Pass = total profit >= +15% **and**
+  trades on >= 20 distinct days. Fail = equity 10% below its running peak, **or** the daily-loss
+  warning on 3 separate days (a day's warning fires once, at a 3% equity loss from the day's start
+  equity; `dailyLimitHit` from the engine also counts). Drawdown and warnings are checked before
+  the pass. The season also ends when the candle reaches `lastCandleTs` (outcome = PASSED if the
+  pass conditions already held, else FAILED, reason `DATA_END`).
+- **Stages:** three 4-week stages at +5%, +10%, +15% checkpoints (fractions of the start balance);
+  a stage closes when a candle reaches its boundary and records whether the checkpoint was met.
+- **ScoreCalculator** grades out of 100: Profit `clamp(40 * profit% / 15, 0, 40)`;
+  Risk `clamp(30 * (1 - maxDrawdown% / 10), 0, 30)`; Consistency = 10 * greenDays/totalDays
+  + 10 * smoothness, where smoothness = `clamp(1 - meanAbsStepReturn / 0.03, 0, 1) * 10`
+  (mean absolute step-to-step equity return; a single-point curve scores the full 10);
+  Discipline = `10/3 *` (share with a stop, share risking <= 2% of equity at entry, share with a
+  journal entry), 0 with no trades. Titles: Rookie < 40, Trader 40-64, Pro 65-84, Gold Master 85+.
+- **Tests:** hand-calculated `SeasonRulesTest` (13) and `ScoreCalculatorTest` (22).
+- **Not yet wired:** no Room/repository integration or UI yet; `SeasonRules`/`ScoreCalculator`
+  are pure and take plain inputs (`SeasonInput`, `ScoreInputs`). Wire them without touching the
+  engine's fill/stop logic.
 
 ## Pre-existing test failure (not introduced)
 - Under the Robolectric release variant, `:app:testReleaseUnitTest` `ClockLogSectionTest`
