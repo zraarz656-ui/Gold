@@ -1,6 +1,7 @@
 package com.tradequest.app.di
 
 import android.content.Context
+import com.tradequest.app.clock.ClockLog
 import com.tradequest.app.clock.LiveClock
 import com.tradequest.data.AndroidAssetSource
 import com.tradequest.data.AssetSource
@@ -73,7 +74,8 @@ object AppModule {
     fun liveClock(
         seasons: SeasonRepository,
         candles: CandleRepository,
-    ): LiveClock = LiveClock(seasons, candles) { System.currentTimeMillis() }
+        clockLog: ClockLog,
+    ): LiveClock = LiveClock(seasons, candles, clockLog) { System.currentTimeMillis() }
 
     /** The wall clock, injectable so tests can freeze it. */
     @Provides

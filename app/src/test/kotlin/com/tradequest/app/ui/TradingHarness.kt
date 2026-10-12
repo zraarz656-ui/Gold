@@ -40,6 +40,8 @@ class TradingHarness {
 
     lateinit var db: TradeQuestDatabase
     lateinit var candles: CandleRepository
+    /** One shared debug clock log, as the app's singleton is (clock + ViewModel). */
+    val clockLog = com.tradequest.app.clock.ClockLog()
     private lateinit var context: Context
 
     private val assets = object : AssetSource {
@@ -70,6 +72,7 @@ class TradingHarness {
             preferences = PreferencesStore(context),
             catchUp = CatchUpProcessor(db),
             assetSource = assets,
+            clockLog = clockLog,
             now = { clockMs },
         )
 
@@ -78,6 +81,7 @@ class TradingHarness {
         com.tradequest.app.clock.LiveClock(
             SeasonRepository(db) { clockMs },
             candles,
+            clockLog,
         ) { clockMs }
 
     /** Seed candles up to (but not including) [anchor] plus a season and import flags. */

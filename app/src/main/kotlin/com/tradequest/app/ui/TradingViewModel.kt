@@ -3,6 +3,7 @@ package com.tradequest.app.ui
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.tradequest.app.clock.ClockLog
 import com.tradequest.app.clock.LiveClock
 import com.tradequest.app.clock.collectRestarting
 import com.tradequest.chart.ChartController
@@ -139,6 +140,8 @@ class TradingViewModel @Inject constructor(
     private val preferences: PreferencesStore,
     private val catchUp: CatchUpProcessor,
     assetSource: AssetSource,
+    /** Debug-only on-device clock event log; never read by trading logic. */
+    private val clockLog: ClockLog,
     /** The wall clock; overridable in tests. Hilt binds the system clock in [AppModule]. */
     private val now: () -> Long,
 ) : ViewModel() {
@@ -235,6 +238,12 @@ class TradingViewModel @Inject constructor(
     private val _dataStats = MutableStateFlow(DataStats())
     val dataStats: StateFlow<DataStats> = _dataStats.asStateFlow()
 
+    /** Debug-only on-device clock event log, newest first, for the Data panel. */
+    val clockLogEntries: StateFlow<List<ClockLog.Entry>> = clockLog.entries
+
+    /** The clock log as one copy-pasteable block for the "Copy log" button. */
+    fun clockLogText(): String = clockLog.asText()
+
     /** True only if generated placeholder data was ever imported; drives the red banner. */
     private val _fakeActive = MutableStateFlow(false)
     val fakeActive: StateFlow<Boolean> = _fakeActive.asStateFlow()
@@ -330,6 +339,7 @@ class TradingViewModel @Inject constructor(
     }
 
     private suspend fun bootstrap() {
+        clockLog.add("App start (ViewModel bootstrap)") // WATCHDOG
         // Apply the saved theme before anything heavy, so the UI colours are right early.
         controller.setTheme(themeForId(preferences.themeIdOnce()))
         controller.setLabelSize(PriceLabelSize.fromId(preferences.labelSizeIdOnce()))
@@ -667,6 +677,7 @@ class TradingViewModel @Inject constructor(
      */
     private fun stampLastTick(wallMs: Long, visibleTs: Long, tickHistNow: Long) {
         if (visibleTs <= 0L || Math.floorMod(visibleTs, CandleRepository.MINUTE_MS) != 0L) {
+            clockLog.add("lastTick SKIPPED (off-boundary): visibleTs=$visibleTs histNow=$tickHistNow")
             Log.w(
                 TAG,
                 "lastTick not stamped: tick is not on a minute boundary " +
@@ -678,6 +689,7 @@ class TradingViewModel @Inject constructor(
         val boundary = MarketTime.floorTo(wallMs, CandleRepository.MINUTE_MS)
         if (wallMs - boundary > BOUNDARY_SLOP_MS) {
             // The tick fired well past its boundary: a late/off-minute tick. Log the source.
+            clockLog.add("lastTick LATE by ${wallMs - boundary}ms: boundary=${ClockLog.format(boundary)}")
             Log.w(
                 TAG,
                 "lastTick late by ${wallMs - boundary}ms: boundary=$boundary wallMs=$wallMs " +
@@ -687,6 +699,7 @@ class TradingViewModel @Inject constructor(
         }
         _lastTickWallMs.value = boundary
         lastTickStampCount += 1
+        clockLog.add("lastTick WRITE: ${ClockLog.format(boundary)} (lag ${wallMs - boundary}ms)")
         Log.i(
             TAG,
             "lastTick stamped boundary=$boundary wallMs=$wallMs lag=${wallMs - boundary}ms " +
@@ -704,6 +717,7 @@ class TradingViewModel @Inject constructor(
                 onError = { t ->
                     lastTickError = t // WATCHDOG
                     tickerCollectorState = "restarted" // WATCHDOG
+                    clockLog.add("ViewModel collector FAILED, restarting: ${t::class.java.simpleName}: ${t.message}")
                     Log.e(TAG, "observeTicker: collector failed; restarting", t) // WATCHDOG
                 },
             ) { visibleTs ->
@@ -713,6 +727,7 @@ class TradingViewModel @Inject constructor(
                 // arrive if a restart re-delivers before any publish, and is ignored.)
                 val tick = visibleTs ?: return@collectRestarting
                 tickerEmitCount += 1 // WATCHDOG
+                clockLog.add("ViewModel ticker emit #$tickerEmitCount: ts=${ClockLog.format(tick)}")
                 Log.i(TAG, "ticker emit #$tickerEmitCount ts=$tick") // WATCHDOG
                 val tickHistNow = seasons.active()?.let { seasons.histNow(it) } ?: tick
                 _histNow.value = tickHistNow

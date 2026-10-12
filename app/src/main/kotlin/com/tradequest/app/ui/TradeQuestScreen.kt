@@ -9,10 +9,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -37,11 +39,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tradequest.app.BuildConfig
+import com.tradequest.app.clock.ClockLog
 import com.tradequest.app.ui.theme.tradeColors
 import com.tradequest.chart.ChartPanel
 import com.tradequest.chart.ChartTheme
@@ -86,6 +91,7 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
     val fakeActive by viewModel.fakeActive.collectAsStateWithLifecycle()
     val histNow by viewModel.histNow.collectAsStateWithLifecycle() // WATCHDOG
     val lastTickWallMs by viewModel.lastTickWallMs.collectAsStateWithLifecycle() // WATCHDOG
+    val clockLogEntries by viewModel.clockLogEntries.collectAsStateWithLifecycle() // WATCHDOG
     val datasetChanged by viewModel.datasetChanged.collectAsStateWithLifecycle()
     val submitError by viewModel.submitError.collectAsStateWithLifecycle()
 
@@ -204,6 +210,8 @@ fun TradeQuestScreen(viewModel: TradingViewModel, modifier: Modifier = Modifier)
             displayOffsetMs = offsetMs,
             lastTickWallMs = lastTickWallMs,
             countdownMs = controller.state.countdownMs,
+            clockLogEntries = clockLogEntries, // WATCHDOG
+            clockLogText = { viewModel.clockLogText() }, // WATCHDOG
             onTheme = { viewModel.setTheme(it) },
             onLabelSize = { viewModel.setLabelSize(it) },
             onShowCountdown = { viewModel.setShowCountdown(it) },
@@ -291,6 +299,9 @@ private fun ChartSettingsSheet(
     displayOffsetMs: Long,
     lastTickWallMs: Long,
     countdownMs: Long?,
+    // WATCHDOG: on-device clock log (newest first) + its copy-pasteable text.
+    clockLogEntries: List<ClockLog.Entry>,
+    clockLogText: () -> String,
     onTheme: (ChartTheme) -> Unit,
     onLabelSize: (PriceLabelSize) -> Unit,
     onShowCountdown: (Boolean) -> Unit,
@@ -330,7 +341,11 @@ private fun ChartSettingsSheet(
             }
 
             Text("Data (debug)", color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            DataPanel(dataStats, histNow, displayOffsetMs, lastTickWallMs, countdownMs) // WATCHDOG
+            DataPanel(
+                dataStats, histNow, displayOffsetMs, lastTickWallMs, countdownMs, // WATCHDOG
+                clockLogEntries = clockLogEntries, // WATCHDOG
+                clockLogText = clockLogText, // WATCHDOG
+            )
             OutlinedButton(onClick = onRefreshData, modifier = Modifier.fillMaxWidth()) {
                 Text("Refresh")
             }
@@ -347,6 +362,9 @@ private fun DataPanel(
     displayOffsetMs: Long,
     lastTickWallMs: Long,
     countdownMs: Long?,
+    // WATCHDOG: on-device clock log (newest first) + its copy-pasteable text.
+    clockLogEntries: List<ClockLog.Entry>,
+    clockLogText: () -> String,
 ) {
     val zone = ZoneId.systemDefault()
     fun utc(ts: Long) = if (ts <= 0L) "—" else formatDateTime(ts, ZoneOffset.UTC)
@@ -404,6 +422,49 @@ private fun DataPanel(
         }
         if (stats.source == DatasetSource.UNVERIFIED) {
             DataRow("", "UNVERIFIED — bundled asset failed checksum/structure checks")
+        }
+    }
+    if (BuildConfig.DEBUG) ClockLogSection(clockLogEntries, clockLogText) // WATCHDOG
+}
+
+/**
+ * Debug-only on-device clock log: the last [ClockLog.MAX] events, newest at the top, each
+ * stamped HH:mm:ss. The app is offline and single-user and the phone-only user cannot run
+ * adb/logcat, so this panel is how the clock's behaviour is observed on the device.
+ */
+@Composable
+private fun ClockLogSection(entries: List<ClockLog.Entry>, text: () -> String) {
+    val c = tradeColors
+    val clipboard = LocalClipboardManager.current
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Clock log (debug)", color = c.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = { clipboard.setText(AnnotatedString(text())) }) {
+                Text("Copy log", fontSize = 12.sp)
+            }
+        }
+        if (entries.isEmpty()) {
+            Text("(no clock events yet)", color = c.onSurfaceVariant, fontSize = 11.sp)
+        } else {
+            Column(
+                Modifier.fillMaxWidth().height(180.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                // entries is newest-first; the section header is pinned above the scroll.
+                entries.forEach { e ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(e.stamp, color = c.onSurfaceVariant, fontSize = 10.sp)
+                        Text(e.message, color = c.onSurface, fontSize = 10.sp)
+                    }
+                }
+            }
         }
     }
 }
