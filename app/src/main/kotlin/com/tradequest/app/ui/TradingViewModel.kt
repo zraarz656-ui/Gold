@@ -10,8 +10,9 @@ import com.tradequest.chart.ChartController
 import com.tradequest.chart.ChartMarker
 import com.tradequest.chart.ChartOrderLine
 import com.tradequest.chart.ChartOverlayState
+import com.tradequest.chart.FormingBar
+import com.tradequest.chart.FormingPath
 import com.tradequest.chart.LevelOutcome
-import com.tradequest.chart.LiveDisplayPath
 import com.tradequest.chart.OrderLineKind
 import com.tradequest.chart.PriceLabelSize
 import com.tradequest.data.AccountCheckpoint
@@ -295,6 +296,17 @@ class TradingViewModel @Inject constructor(
     @Volatile
     private var displayHistNow: Long = 0L
 
+    /** The forming minute's bar for the last display frame, advanced in place at 4 Hz. */
+    @Volatile
+    private var formingBar: FormingBar? = null
+
+    /**
+     * Closed 1-minute candles ending at [displayClosed], cached so the envelope (a small band
+     * derived only from CLOSED candles) can be recomputed per frame without a database read.
+     */
+    @Volatile
+    private var closedWindow: List<Candle> = emptyList()
+
     private var displayJob: kotlinx.coroutines.Job? = null
 
     /**
@@ -450,9 +462,9 @@ class TradingViewModel @Inject constructor(
         }
     }
 
-    /** Recompute the screen-only price from the last closed candle and the replayed clock. */
+    /** Recompute the screen-only price from the closed candles and the replayed clock. */
     private fun publishDisplayTick() {
-        // Mirror the wall clock onto the replayed clock every frame so the smoothed price
+        // Mirror the wall clock onto the replayed clock every frame so the displayed price
         // advances within the minute; the countdown is derived the same way, from the live
         // wall clock, so it counts down smoothly and matches the phone clock's next :00.
         val histNow = displayHistNowNow()
@@ -477,6 +489,8 @@ class TradingViewModel @Inject constructor(
         // display strip itself would let a tick that lands before the first authoritative
         // refresh freeze the balance at its zero initial value.
         _displayStrip.value = recomputeStrip(_strip.value, price ?: base.bid)
+        // Extend the forming minute's running high-low with this frame's price and repaint.
+        controller.setForming(nextFormingBar(price))
     }
 
     /**
@@ -499,18 +513,56 @@ class TradingViewModel @Inject constructor(
     }
 
     /**
-     * The smoothed price for the current instant, or null when the market is shut or there is
-     * no closed candle yet. It is a random walk around the last CLOSED candle's close; the
-     * forming minute's high, low and close are never read.
+     * The displayed price for the current instant, or null when the market is shut or there is
+     * no closed candle yet. It is a path anchored at the previous close and bounded by a small
+     * envelope derived only from CLOSED candles; the forming minute's own high, low and close
+     * are never read.
      */
     private fun displayPathPrice(): Double? {
-        val candle = displayClosed ?: return null
+        val prev = displayClosed ?: return null
         val now = if (displayHistNow > 0L) displayHistNow else _histNow.value
         if (now <= 0L || isMarketClosed(now)) return null
-        // The walk spans the minute that FOLLOWS the last closed candle; that minute begins
+        // The path spans the minute that FOLLOWS the last closed candle; that minute begins
         // one minute after the candle's timestamp.
-        val minuteStart = candle.ts + CandleRepository.MINUTE_MS
-        return LiveDisplayPath.valueAt(candle, (now - minuteStart).toDouble())
+        val openTs = prev.ts + CandleRepository.MINUTE_MS
+        return FormingPath.displayAt(openTs, prev.c, envelope(), (now - openTs).toDouble())
+    }
+
+    /**
+     * A small price band for the forming minute, derived only from CLOSED candles: the average
+     * true range of the last [ENVELOPE_MINUTES] completed minutes, floored so it is never zero
+     * and capped so the displayed price stays realistic. It is the path's half-height, so the
+     * forming bar's high-low spans about +/- this band and never reaches the forming minute's
+     * real extremes.
+     */
+    private fun envelope(): Double {
+        val w = closedWindow
+        if (w.size < 2) return ENVELOPE_MIN_RANGE
+        val n = minOf(w.size, ENVELOPE_MINUTES)
+        var sum = 0.0
+        for (i in w.size - n until w.size) {
+            val c = w[i]
+            val prevClose = if (i > 0) w[i - 1].c else c.o
+            sum += maxOf(c.h - c.l, kotlin.math.abs(c.h - prevClose), kotlin.math.abs(c.l - prevClose))
+        }
+        return (sum / n).coerceIn(ENVELOPE_MIN_RANGE, ENVELOPE_MAX_RANGE)
+    }
+
+    /**
+     * The forming bar for this frame: the previous close as open, the displayed price as the
+     * running close, and the running high-low extended by that price. Returns null while the
+     * market is shut or there is no closed candle. Visual only; never reaches the engine.
+     */
+    private fun nextFormingBar(price: Double?): FormingBar? {
+        val prev = displayClosed ?: return null
+        val now = if (displayHistNow > 0L) displayHistNow else _histNow.value
+        if (price == null || now <= 0L || isMarketClosed(now)) return null
+        val openTs = prev.ts + CandleRepository.MINUTE_MS
+        val prior = formingBar
+        val next = if (prior != null && prior.ts == openTs) prior.advanced(price)
+        else FormingBar(openTs, prev.c, price, maxOf(prev.c, price), minOf(prev.c, price))
+        formingBar = next
+        return next
     }
 
     /** The screen-only quote: the walk's [price] carries the authoritative spread. */
@@ -970,16 +1022,24 @@ class TradingViewModel @Inject constructor(
             }
         }
         sampleEquity(season, state, equity, margin)
-        // Point the display path at the last CLOSED candle, so the visual walk is a band
-        // around that candle's close. It never reads the forming minute's high, low or close.
+        // Point the display path at the last CLOSED candle, so the visual walk starts on that
+        // candle's close. It never reads the forming minute's high, low or close.
         val latestClosed = candles.latestClosed(_histNow.value)
         if (latestClosed?.ts != displayClosed?.ts) {
-            // A new minute began: re-point the walk at the candle that closed, then paint its
-            // first value now. Subsequent 4 Hz frames advance along that candle's path.
+            // A new minute began: re-point the walk at the candle that closed, refresh the
+            // closed-candle window the envelope is derived from, and start a fresh forming bar
+            // whose open is that candle's close.
             displayClosed = latestClosed
+            closedWindow = candles.upTo(_histNow.value, ENVELOPE_MINUTES + 2)
+            formingBar = null
         }
         displayHistNowNow()
-        displayPriceCache = displayPathPrice()
+        val price = displayPathPrice()
+        displayPriceCache = price
+        controller.setDisplayPrice(price)
+        // Repaint the forming bar now so it appears with the fresh authoritative state, before
+        // the next 4 Hz frame extends it.
+        controller.setForming(nextFormingBar(price))
         // Re-point the screen-only quote/strip now that the authoritative state is fresh, so
         // the equity strip tracks the walk from the very first frame after load.
         syncDisplayQuote()
@@ -1173,6 +1233,12 @@ class TradingViewModel @Inject constructor(
         private const val LARGE_GAP = 5_000L
         /** Display-path step: 4 updates a second. */
         private const val DISPLAY_TICK_MS = 250L
+        /** How many completed minutes the forming bar's envelope averages over. */
+        private const val ENVELOPE_MINUTES = 14
+        /** Floor on the envelope, so a quiet market still shows a little life. */
+        private const val ENVELOPE_MIN_RANGE = 0.05
+        /** Cap on the envelope, so the displayed price stays realistic. */
+        private const val ENVELOPE_MAX_RANGE = 3.0
         /** A second order tap within this window is coalesced into the first. */
         private const val SUBMIT_DEBOUNCE_MS = 400L
         // WATCHDOG: how long without a minute tick before "TICK STALL" is logged.

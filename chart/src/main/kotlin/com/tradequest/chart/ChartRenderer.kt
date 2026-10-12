@@ -55,7 +55,11 @@ fun resolvePriceRange(state: ChartState, visible: IntRange): PriceRange {
         )
     }
     val e = ChartMath.dataExtent(state.bars, visible) ?: return PriceRange(0.0, 1.0)
-    return ChartMath.autoFitRange(e.min, e.max)
+    // The forming bar sits just past the last closed bar; fold its running range in so the
+    // live candle is never clipped.
+    val f = state.forming
+    if (f == null) return ChartMath.autoFitRange(e.min, e.max)
+    return ChartMath.autoFitRange(minOf(e.min, f.low), maxOf(e.max, f.high))
 }
 
 fun DrawScope.drawChart(
@@ -82,11 +86,12 @@ fun DrawScope.drawChart(
 
         drawMarketBands(state, geo)
         drawCandles(state, geo, paths)
+        drawFormingCandle(state, geo, paths)
         drawIndicatorHook(state, geo)
         drawDrawingsHook(state, geo)
         drawOrderLinesHook(state, geo, textMeasurer)
 
-        if (state.bars.lastOrNull() != null) drawCurrentPriceLine(state, geo)
+        if (state.bars.lastOrNull() != null || state.forming != null) drawCurrentPriceLine(state, geo)
         if (crosshair != null) drawCrosshair(state, geo, crosshair)
     }
 
@@ -97,7 +102,7 @@ fun DrawScope.drawChart(
     val displayPrice = state.displayPrice ?: last?.c
     val currentY = displayPrice?.let { ChartMath.priceToY(it, geo.priceRange, plot) }
     val crosshairY = crosshair?.let { it.y.coerceIn(plot.top, plot.bottom) }
-    val lastUp = last != null && last.c >= last.o
+    val lastUp = state.forming?.let { it.display >= it.open } ?: (last != null && last.c >= last.o)
     val currentColor = TagStyle.currentPriceFill(theme, lastUp)
     val minGapPx = density * PRICE_LABEL_MIN_GAP_DP
     val priceTagH = LevelGeometry.priceTagHeight(density, scale)
@@ -132,7 +137,7 @@ fun DrawScope.drawChart(
             price, scale, theme, textColor = inverted.text,
         )
     }
-    if (last != null && currentY != null && displayPrice != null) {
+    if (currentY != null && displayPrice != null && (last != null || state.forming != null)) {
         val rect = TagGeom.priceTag(size.width, plot, currentY, density, scale, measure.width(formatPrice(displayPrice), CURRENT_PRICE_TAG_SP * scale))
         drawCurrentPriceTag(state, geo, textMeasurer, rect, currentColor, displayPrice, currentY, lastUp, scale)
 
@@ -339,6 +344,38 @@ private fun DrawScope.drawCandles(state: ChartState, geo: ChartGeometry, paths: 
     drawPath(paths.downBody, theme.down)
 }
 
+/**
+ * The forming candle sits one slot past the last closed bar. It opens at the previous close
+ * and its running high/low are the displayed price's extremes, so the body grows and shrinks
+ * live without ever showing the forming minute's real range.
+ */
+private fun DrawScope.drawFormingCandle(state: ChartState, geo: ChartGeometry, paths: CandlePaths) {
+    val f = state.forming ?: return
+    val theme = state.theme
+    val vp = state.viewport
+    val index = state.bars.size
+    val x = ChartMath.indexToX(index.toFloat(), vp)
+    if (x < geo.plot.left - vp.candleWidthPx || x > geo.plot.right + vp.candleWidthPx) return
+    val halfW = maxOf(0.5f, vp.candleWidthPx / 2f - 0.5f)
+    val up = f.display >= f.open
+    val yH = ChartMath.priceToY(f.high, geo.priceRange, geo.plot)
+    val yL = ChartMath.priceToY(f.low, geo.priceRange, geo.plot)
+    val yO = ChartMath.priceToY(f.open, geo.priceRange, geo.plot)
+    val yC = ChartMath.priceToY(f.display, geo.priceRange, geo.plot)
+    // Fresh paths, so the closed candles already drawn are not overdrawn.
+    val wick = Path().apply { moveTo(x, yH); lineTo(x, yL) }
+    val bodyTop = min(yO, yC)
+    val bodyH = maxOf(1f, maxOf(yO, yC) - bodyTop)
+    val body = Path().apply { addRect(Rect(x - halfW, bodyTop, x + halfW, bodyTop + bodyH)) }
+    if (up) {
+        drawPath(wick, theme.upWick, style = Stroke(1f))
+        drawPath(body, theme.up)
+    } else {
+        drawPath(wick, theme.downWick, style = Stroke(1f))
+        drawPath(body, theme.down)
+    }
+}
+
 // Extension points for Phase 3 overlays (indicators, drawings, order lines).
 private fun DrawScope.drawIndicatorHook(state: ChartState, geo: ChartGeometry) {}
 private fun DrawScope.drawDrawingsHook(state: ChartState, geo: ChartGeometry) {}
@@ -421,7 +458,8 @@ private fun DrawScope.drawCurrentPriceLine(state: ChartState, geo: ChartGeometry
     val last = state.bars.lastOrNull() ?: return
     val price = state.displayPrice ?: last.c
     val y = ChartMath.priceToY(price, geo.priceRange, geo.plot)
-    val color = TagStyle.currentPriceFill(state.theme, last.c >= last.o)
+    val up = state.forming?.let { it.display >= it.open } ?: (last.c >= last.o)
+    val color = TagStyle.currentPriceFill(state.theme, up)
         .copy(alpha = CURRENT_PRICE_LINE_OPACITY)
     drawDashedLine(color, Offset(geo.plot.left, y), Offset(geo.plot.right, y), width = 1f, dash = 4f, gap = 3f)
 }
@@ -466,15 +504,20 @@ private fun DrawScope.drawCurrentPriceTag(
     val ty = rect.centerY - measured.size.height / 2f
     drawText(measured, topLeft = Offset(tx, ty))
 
-    // A small dot at the last candle's close, in the up/down colour.
-    val last = state.bars.lastOrNull() ?: return
+    // A small dot at the forming candle's slot, in the up/down colour.
+    val up2 = state.forming?.let { it.display >= it.open } ?: run {
+        val l = state.bars.lastOrNull() ?: return
+        l.c >= l.o
+    }
+    val dotColor = TagStyle.candleColor(theme, up = up2)
     val x = ChartMath.indexToX(lastIndex(state).toFloat(), state.viewport)
         .coerceIn(geo.plot.left, geo.plot.right)
-    val dotColor = TagStyle.candleColor(theme, up = last.c >= last.o)
     drawCircle(dotColor, radius = 3f * density, center = Offset(x, lineY))
 }
 
-private fun lastIndex(state: ChartState): Int = maxOf(0, state.bars.size - 1)
+/** The index of the bar the dot marks: the forming bar if present, else the last closed bar. */
+private fun lastIndex(state: ChartState): Int =
+    if (state.forming != null) state.bars.size else maxOf(0, state.bars.size - 1)
 
 private fun DrawScope.drawCrosshair(
     state: ChartState,

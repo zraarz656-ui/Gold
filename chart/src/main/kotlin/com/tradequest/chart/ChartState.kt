@@ -52,10 +52,16 @@ data class ChartState(
     /** The single position whose "+SL"/"+TP" handles are shown; null when none is selected. */
     val selectedEntryId: Long? = null,
     /**
-     * Visual-only smoothed price (see `LiveDisplayPath`). When non-null the price line, tag
-     * and dot are drawn here instead of the last close. It never affects fills or P&L.
+     * Visual-only smoothed price. When non-null the price line, tag and dot are drawn here
+     * instead of the last close. It never affects fills or P&L.
      */
     val displayPrice: Double? = null,
+    /**
+     * The minute currently forming, built from the previous close plus the displayed price
+     * (see [FormingBar]). Drawn as the right-most candle; its open equals the previous close
+     * and it never reveals the forming minute's real high, low or close. Visual only.
+     */
+    val forming: FormingBar? = null,
 ) {
     /** Lines to draw: the overlay's lines plus the live drag preview. */
     val orderLines: List<ChartOrderLine> get() = overlay.lines

@@ -424,6 +424,16 @@ class ChartController(
         if (state.displayPrice != p) state = state.copy(displayPrice = p)
     }
 
+    /**
+     * Set the minute currently forming, drawn as the right-most candle. Built from the
+     * previous close plus the displayed price only, so it never reveals the forming minute's
+     * real high, low or close. Visual only; never reaches the engine.
+     */
+    fun setForming(forming: FormingBar?) {
+        val f = forming?.takeIf { it.open > 0.0 && it.display.isFinite() }
+        if (state.forming != f) state = state.copy(forming = f)
+    }
+
     companion object {
         fun spanMs(tf: Timeframe): Long = when (tf) {
             Timeframe.M1 -> 60_000L

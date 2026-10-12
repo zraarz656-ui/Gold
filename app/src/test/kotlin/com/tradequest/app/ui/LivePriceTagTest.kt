@@ -31,8 +31,8 @@ class LivePriceTagTest {
     @Before fun setUp() = h.setUp()
     @After fun tearDown() = h.tearDown()
 
-    /** The forming candle of each minute opens far outside the walk's band, so "the tag is
-     *  pinned to the open" is unambiguous (the walk is bounded by the last CLOSED candle). */
+    /** The forming candle of each minute opens far outside the display band (which is anchored
+     *  at the previous close), so "the tag is pinned to the open" is unambiguous. */
     private val firstMinuteOpen = 2445.0
     private val secondMinuteOpen = 2470.0
 

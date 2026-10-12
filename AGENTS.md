@@ -344,3 +344,33 @@ constants and `GestureMath` were diffed field-by-field against the APK and match
   the read API but is an integration token with no `contents:write` scope, so git push and
   the write API return 403 "Resource not accessible by integration". Do not embed any token
   in `.git/config`; pass it in the push URL only.
+
+## Forming candle rebuilt from previous close (display-only build)
+- **Bug:** after a minute boundary the live price moved inside the *previous, closed* candle's
+  high-low range; the closed candle appeared to change and the forming candle looked frozen.
+  Root cause: the old display path (`LiveDisplayPath.valueAt`) wandered inside the last CLOSED
+  candle's real high-low, so the "live" price sat in the closed bar's range and there was no
+  separate forming bar at all.
+- **Fix (display only):** the forming minute is now a real drawn bar built solely from the
+  previous close plus the displayed price. `FormingPath.displayAt(openTs, prevClose, env, t)`
+  is anchored at 0 == prevClose, bounded by `+/- env`, and only touches `prevClose +/- env`.
+  `FormingBar(ts, open, display, high, low)` opens at `prevClose` and its `high/low` are the
+  *running* extremes of the display price (`advanced()` extends them; the prior bar is kept in
+  `TradingViewModel.formingBar` so the range persists across the 4 Hz frames). `env` is the
+  average true range of the last `ENVELOPE_MINUTES` closed minutes, derived only from CLOSED
+  candles, never the forming minute's own OHLC. `ChartState.forming` carries the bar; the
+  renderer draws it one slot past the last closed bar, folds its range into the price extent,
+  and the tag/line colour uses it. `LiveDisplayPath` was deleted.
+- **Invariants (tested):** closed candles are drawn from fixed OHLC and never change; the
+  forming open equals the previous close; the displayed price stays inside the forming bar's
+  running high-low and never overlaps the stored forming-minute range; fills/quote read the
+  closed candle. Tests: `FormingBarTest` (chart), `FormingCandleDisplayTest` (app);
+  `DisplayPriceIsolationTest` updated to assert against the forming bar.
+- **Note:** fills/SL/TP/P&L paths are untouched. The engine never reads `FormingBar`.
+
+## Pre-existing test failure (not introduced)
+- Under the Robolectric release variant, `:app:testReleaseUnitTest` `ClockLogSectionTest`
+  (2 tests) fails with "Unable to resolve activity ... androidx.activity.ComponentActivity".
+  This is a manifest/robolectric release-variant issue unrelated to display changes; the debug
+  variant of the same class passes. Use the debug variants plus `:engine:test`, `:data:test`,
+  `:chart:test` for the green suite.

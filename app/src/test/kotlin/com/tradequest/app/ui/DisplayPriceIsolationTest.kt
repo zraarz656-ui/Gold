@@ -45,8 +45,9 @@ class DisplayPriceIsolationTest {
             h.db.candleDao().insertAll(listOf(Candle1m(h.openNow, 2401.0, 2401.4, 2400.8, 2401.2, 50.0)))
         }
         val vm = h.buildViewModel()
-        h.awaitUntil { vm.ready.value && vm.quote.value.bid > 0.0 }
-        // The display ticker paints from the forming candle; wait until it has run once.
+        h.awaitUntil { vm.ready.value && vm.controller.state.forming != null }
+        // Advance the display into the forming minute, so the path has moved off the open.
+        h.clockMs = h.openNow + 20_000L
         h.awaitUntil { vm.displayQuote.value.bid > 0.0 && vm.displayQuote.value.bid != vm.quote.value.bid }
 
         val now = vm.histNow.value
@@ -58,11 +59,12 @@ class DisplayPriceIsolationTest {
         val display = vm.displayQuote.value
         val real = vm.quote.value
 
-        // The display bid sits inside the forming candle's real range. It has already moved
-        // off the open (the wait above required it), but never past an extreme.
+        // The display bid stays inside the forming bar's running range, which is the previous
+        // close banded by the closed-candle envelope — never the stored forming minute's range.
+        val f = vm.controller.state.forming!!
         assertTrue(
-            "display bid ${display.bid} must lie in [${forming.l}, ${forming.h}]",
-            display.bid >= forming.l - 1e-9 && display.bid <= forming.h + 1e-9,
+            "display bid ${display.bid} must lie in [${f.low}, ${f.high}]",
+            display.bid >= f.low - 1e-9 && display.bid <= f.high + 1e-9,
         )
 
         // The display quote is the same instrument: it reuses the authoritative spread and
@@ -76,7 +78,7 @@ class DisplayPriceIsolationTest {
         val deadline = System.currentTimeMillis() + 800
         h.awaitUntil { System.currentTimeMillis() > deadline }
         assertEquals("the display path must not move the authoritative quote", quoteBefore, vm.quote.value.bid, 1e-9)
-        assertTrue("the display still tracks the forming candle", vm.displayQuote.value.bid in forming.l..forming.h)
+        assertTrue("the display still tracks the forming candle", vm.displayQuote.value.bid in f.low..f.high)
     }
 
     @Test
@@ -86,7 +88,8 @@ class DisplayPriceIsolationTest {
             h.db.candleDao().insertAll(listOf(Candle1m(h.openNow, 2401.0, 2401.4, 2400.8, 2401.2, 50.0)))
         }
         val vm = h.buildViewModel()
-        h.awaitUntil { vm.ready.value && vm.quote.value.bid > 0.0 }
+        h.awaitUntil { vm.ready.value && vm.controller.state.forming != null }
+        h.clockMs = h.openNow + 20_000L
         h.awaitUntil { vm.displayQuote.value.bid > 0.0 && vm.displayQuote.value.bid != vm.quote.value.bid }
 
         // A market buy fills immediately at the authoritative ask passed from the real quote,
