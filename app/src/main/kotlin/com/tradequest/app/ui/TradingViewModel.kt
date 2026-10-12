@@ -194,6 +194,16 @@ class TradingViewModel @Inject constructor(
     var lastTickStampCount: Int = 0
         private set
 
+    /** WATCHDOG: how many real ticker emissions the collector has processed. */
+    @Volatile
+    var tickerEmitCount: Int = 0
+        private set
+
+    /** WATCHDOG: "starting" | "running" | "restarted" — the ticker collector's current state. */
+    @Volatile
+    var tickerCollectorState: String = "starting"
+        private set
+
     /** WATCHDOG: the last throwable that killed the tick collector, for stall diagnostics. */
     @Volatile
     private var lastTickError: Throwable? = null
@@ -693,20 +703,23 @@ class TradingViewModel @Inject constructor(
                 restartDelayMs = TICK_RESTART_MS,
                 onError = { t ->
                     lastTickError = t // WATCHDOG
+                    tickerCollectorState = "restarted" // WATCHDOG
                     Log.e(TAG, "observeTicker: collector failed; restarting", t) // WATCHDOG
                 },
             ) { visibleTs ->
-                // The ticker is a StateFlow seeded at 0; `collect` replays that value at
-                // subscribe. It is not a real published candle, so ignore it: otherwise app
-                // open would stamp lastTick (and the countdown) at an arbitrary off-minute
-                // instant, before the first boundary tick.
-                if (visibleTs <= 0L) return@collectRestarting
-                val tickHistNow = seasons.active()?.let { seasons.histNow(it) } ?: visibleTs
+                tickerCollectorState = "running" // WATCHDOG
+                // The ticker is null until the first candle is published, so nothing needs
+                // filtering here: a collector's first emission is a real tick. (A null can only
+                // arrive if a restart re-delivers before any publish, and is ignored.)
+                val tick = visibleTs ?: return@collectRestarting
+                tickerEmitCount += 1 // WATCHDOG
+                Log.i(TAG, "ticker emit #$tickerEmitCount ts=$tick") // WATCHDOG
+                val tickHistNow = seasons.active()?.let { seasons.histNow(it) } ?: tick
                 _histNow.value = tickHistNow
                 // The only writer of lastTick. A `collectRestarting` restart re-delivers the
                 // current value, and a stray publish could carry a non-boundary ts; both are
                 // dropped here so lastTick can only ever be a minute boundary.
-                stampLastTick(now(), visibleTs, tickHistNow)
+                stampLastTick(now(), tick, tickHistNow)
                 lastTickHistNow = tickHistNow // WATCHDOG
                 // Fold every newly visible candle into the engine on the minute tick, so a
                 // market order fills when the next candle closes instead of only on reopen.

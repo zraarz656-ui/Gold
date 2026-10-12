@@ -4,6 +4,8 @@ import com.tradequest.data.CandleRepository
 import com.tradequest.data.Season
 import com.tradequest.data.SeasonRepository
 import com.tradequest.engine.ClockEngine
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -43,6 +45,7 @@ class LiveClock @Inject constructor(
     /** Start the minute ticker once; repeated calls (e.g. on rotation) are ignored. */
     fun start(scope: CoroutineScope) {
         if (job?.isActive == true) return
+        Log.i(TAG, "LiveClock.start launched (previous realign/stop), waiting for next boundary") // WATCHDOG
         job = scope.launch {
             while (isActive) {
                 val season = seasons.active()
@@ -54,8 +57,19 @@ class LiveClock @Inject constructor(
                 // Wait for the next real minute boundary BEFORE the first tick, so every tick
                 // is boundary-aligned and none fires at an arbitrary off-minute instant. The
                 // chart is already live from catch-up, so it does not need a tick to open.
-                delay(delayToNextMinute(clock()))
-                emitTick(season)
+                val nowMs = clock() // WATCHDOG
+                val waitMs = delayToNextMinute(nowMs) // WATCHDOG
+                Log.i(TAG, "LiveClock scheduling next tick in ${waitMs}ms (now=$nowMs)") // WATCHDOG
+                delay(waitMs)
+                // A throw here (e.g. a Room query on a torn-down DB) would otherwise end this
+                // loop for good, leaving the minute ticker dead (lastTick stuck at "—"). Absorb
+                // it and re-align onto the next boundary so the ticker always recovers.
+                try {
+                    emitTick(season)
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    Log.e(TAG, "LiveClock.emitTick failed; realigning", t) // WATCHDOG
+                }
             }
         }
     }
@@ -66,6 +80,7 @@ class LiveClock @Inject constructor(
      * Cancelling and restarting waits for the boundary again, so the next tick is aligned.
      */
     fun realign(scope: CoroutineScope) {
+        Log.i(TAG, "LiveClock.realign (cancel + restart)") // WATCHDOG
         job?.cancel()
         job = null
         start(scope)
@@ -75,11 +90,13 @@ class LiveClock @Inject constructor(
         val realNow = clock()
         val histNow = seasons.histNow(season, realNow)
         val visible = ClockEngine.lastVisibleCandleTs(histNow)
+        Log.i(TAG, "LiveClock tick realNow=$realNow histNow=$histNow visible=$visible") // WATCHDOG
         _tick.value = ClockTick(realNow, histNow, visible)
         candles.publish(visible)
     }
 
     companion object {
+        private const val TAG = "TradeQuest"
         const val MINUTE_MS = 60_000L
 
         /** A small lag past the boundary so the clock has definitely ticked over. */

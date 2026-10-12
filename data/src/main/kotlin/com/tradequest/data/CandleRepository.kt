@@ -19,10 +19,15 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class CandleRepository(private val db: TradeQuestDatabase) {
 
-    private val _ticker = MutableStateFlow(0L)
+    private val _ticker = MutableStateFlow<Long?>(null)
 
-    /** Emits the timestamp of the latest closed candle whenever one becomes available. */
-    val ticker: StateFlow<Long> = _ticker.asStateFlow()
+    /**
+     * Emits the timestamp of the latest closed candle whenever one becomes available. It is
+     * null until the first candle is published, so a new collector's first emission is always
+     * a real tick — never a seed value that has to be filtered (and could swallow the first
+     * boundary tick after launch).
+     */
+    val ticker: StateFlow<Long?> = _ticker.asStateFlow()
 
     suspend fun count(): Long = db.candleDao().count()
 
@@ -64,7 +69,8 @@ class CandleRepository(private val db: TradeQuestDatabase) {
 
     /** Publish a new closed candle timestamp to the ticker. */
     fun publish(closedTs: Long) {
-        if (closedTs > _ticker.value) _ticker.value = closedTs
+        val current = _ticker.value
+        if (current == null || closedTs > current) _ticker.value = closedTs
     }
 
     /** Flow of the latest closed candle, re-read whenever the ticker fires. */

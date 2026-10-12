@@ -44,4 +44,28 @@ class CandleRepositoryTest {
         assertTrue(latest!!.ts < histNow)
         db.close()
     }
+
+    /**
+     * The ticker is null until the first candle is published, so a collector's first emission
+     * is a real tick. A 0 seed that had to be filtered could swallow the first boundary tick
+     * after launch and leave `lastTick` stuck at "—".
+     */
+    @Test
+    fun tickerIsNullUntilTheFirstPublishThenMonotonic() = runTest {
+        val db = TestDb.open()
+        val repo = CandleRepository(db)
+
+        assertEquals(null, repo.ticker.value)
+
+        repo.publish(start + 60_000L)
+        assertEquals(start + 60_000L, repo.ticker.value)
+
+        // An older/equal tick is ignored; a newer one advances.
+        repo.publish(start)
+        assertEquals(start + 60_000L, repo.ticker.value)
+        repo.publish(start + 120_000L)
+        assertEquals(start + 120_000L, repo.ticker.value)
+
+        db.close()
+    }
 }
