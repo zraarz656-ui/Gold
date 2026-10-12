@@ -6,6 +6,18 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+// Short hash of the commit this APK was built from, surfaced in Chart settings so the
+// installed build can be identified on the device without adb.
+val buildGitHash: String = runCatching {
+    val p = ProcessBuilder("git", "rev-parse", "--short=8", "HEAD")
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val out = p.inputStream.bufferedReader().readText().trim()
+    p.waitFor()
+    out
+}.getOrDefault("unknown")
+
 android {
     namespace = "com.tradequest.app"
     compileSdk = 34
@@ -16,6 +28,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("String", "GIT_HASH", "\"$buildGitHash\"")
     }
 
     // A fixed debug keystore, committed at keystore/tradequest-debug.keystore (see

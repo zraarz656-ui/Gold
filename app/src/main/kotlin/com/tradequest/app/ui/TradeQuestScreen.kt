@@ -319,6 +319,10 @@ private fun ChartSettingsSheet(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text("Chart settings", color = c.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(
+                "build ${BuildConfig.GIT_HASH} · v${BuildConfig.VERSION_NAME}",
+                color = c.onSurfaceVariant, fontSize = 11.sp,
+            )
 
             Text("Theme", color = c.onSurfaceVariant, fontSize = 11.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -383,6 +387,9 @@ private fun DataPanel(
             "zone=$zone  now=$phoneNow  displayedHistNow=$displayedHist  " +
                 "lastTick=$lastTick  countdown=$countdown",
         )
+        // Placed immediately under the top status line (not at the foot of the panel) so the
+        // clock log is reachable without scrolling past the long candle/gap list.
+        if (BuildConfig.DEBUG) ClockLogSection(clockLogEntries, clockLogText) // WATCHDOG
         DataRow("Rows (1m)", "${stats.rowCount}")
         DataRow("First candle", "${utc(stats.firstTs)} UTC")
         DataRow("", "shows ${shown(stats.firstTs)}")
@@ -424,7 +431,6 @@ private fun DataPanel(
             DataRow("", "UNVERIFIED — bundled asset failed checksum/structure checks")
         }
     }
-    if (BuildConfig.DEBUG) ClockLogSection(clockLogEntries, clockLogText) // WATCHDOG
 }
 
 /**
@@ -433,7 +439,7 @@ private fun DataPanel(
  * adb/logcat, so this panel is how the clock's behaviour is observed on the device.
  */
 @Composable
-private fun ClockLogSection(entries: List<ClockLog.Entry>, text: () -> String) {
+internal fun ClockLogSection(entries: List<ClockLog.Entry>, text: () -> String) {
     val c = tradeColors
     val clipboard = LocalClipboardManager.current
     Column(
